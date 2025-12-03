@@ -7,14 +7,11 @@ namespace AlturaCode\Billing\Stripe;
 use AlturaCode\Billing\Core\Provider\BillingProvider;
 use AlturaCode\Billing\Core\Provider\BillingProviderResult;
 use AlturaCode\Billing\Core\Provider\ExternalIdMapper;
-use AlturaCode\Billing\Core\SubscriptionItemId;
 use AlturaCode\Billing\Core\Subscriptions\Subscription;
-use DateTimeImmutable;
 use InvalidArgumentException;
 use LogicException;
 use Stripe\Exception\ApiErrorException;
 use Stripe\StripeClient;
-use Symfony\Component\Uid\Ulid;
 
 final readonly class StripeBillingProvider implements BillingProvider
 {
@@ -30,20 +27,67 @@ final readonly class StripeBillingProvider implements BillingProvider
      */
     public function create(Subscription $subscription, array $options = []): BillingProviderResult
     {
-        $params = $this->buildCreateParams($subscription, $options);
+        $customerId = $this->requireStripeCustomerId($subscription);
 
-        $stripeSub = $this->stripeClient->subscriptions->create($params);
-        $redirectUrl = $this->extractRedirectUrl($stripeSub);
+        $successUrl = $options['success_url'] ?? null;
+        $cancelUrl = $options['cancel_url'] ?? null;
 
-        if ($redirectUrl) {
-            return BillingProviderResult::redirect($subscription, $redirectUrl);
+        if (!$successUrl || !$cancelUrl) {
+            throw new InvalidArgumentException('Missing required Checkout URLs: provide both success_url and cancel_url in options.');
         }
 
-        if ($stripeSub->status === 'active') {
-            return BillingProviderResult::completed(SubscriptionActivator::activate($stripeSub, $subscription));
+        $lineItems = $this->buildCheckoutLineItems($subscription);
+
+        $params = [
+            'mode' => 'subscription',
+            'customer' => $customerId,
+            'line_items' => $lineItems,
+            'success_url' => $successUrl,
+            'cancel_url' => $cancelUrl,
+            'client_reference_id' => $subscription->id()->value(),
+            'metadata' => [
+                'internal_subscription_id' => $subscription->id()->value(),
+            ],
+        ];
+
+        // Optional flags passed through from $options when provided
+        foreach (['allow_promotion_codes', 'locale'] as $optKey) {
+            if (array_key_exists($optKey, $options)) {
+                $params[$optKey] = $options[$optKey];
+            }
         }
 
-        throw new LogicException('Stripe subscription status is not active and no redirect URL was found.');
+        // Allow passing subscription-level options supported by Checkout via subscription_data
+        $subscriptionData = [];
+        foreach ([
+                     'proration_behavior',
+                     'default_payment_method',
+                     'coupon',
+                 ] as $optKey) {
+            if (array_key_exists($optKey, $options)) {
+                $subscriptionData[$optKey] = $options[$optKey];
+            }
+        }
+
+        if ($subscription->cancelAtPeriodEnd()) {
+            $subscriptionData['cancel_at_period_end'] = true;
+        }
+
+        if ($subscription->trialEndsAt() !== null) {
+            $subscriptionData['trial_end'] = $subscription->trialEndsAt()->getTimestamp();
+        }
+
+        if (!empty($subscriptionData)) {
+            $params['subscription_data'] = $subscriptionData;
+        }
+
+        $session = $this->stripeClient->checkout->sessions->create($params);
+
+        if (!empty($session->url)) {
+            return BillingProviderResult::redirect($subscription, $session->url);
+        }
+
+        throw new LogicException('Failed to create Stripe Checkout session or missing session URL.');
     }
 
     /**
@@ -168,22 +212,31 @@ final readonly class StripeBillingProvider implements BillingProvider
         return $items;
     }
 
-    private function extractRedirectUrl(object $stripeSub): ?string
+    private function buildCheckoutLineItems(Subscription $subscription): array
     {
-        if (isset($stripeSub->latest_invoice) && is_object($stripeSub->latest_invoice)) {
-            $invoice = $stripeSub->latest_invoice;
-            if (!empty($invoice->hosted_invoice_url)) {
-                return $invoice->hosted_invoice_url;
+        $priceMap = $this->idMapper->getExternalId(
+            'price',
+            array_map(static fn($item) => $item->priceId()->value(), $subscription->items()),
+            'stripe'
+        );
+
+        $lineItems = [];
+        foreach ($subscription->items() as $item) {
+            $internalPriceId = (string)$item->priceId();
+            $stripePriceId = $priceMap[$internalPriceId] ?? null;
+            if (!$stripePriceId) {
+                throw new InvalidArgumentException(
+                    sprintf('Missing Stripe price for internal price id %s. Provide a mapping via ExternalIdMapper.', $internalPriceId)
+                );
             }
-            if (isset($invoice->payment_intent) && is_object($invoice->payment_intent)) {
-                $pi = $invoice->payment_intent;
-                if (isset($pi->next_action->redirect_to_url->url)) {
-                    return $pi->next_action->redirect_to_url->url;
-                }
-            }
+
+            $lineItems[] = [
+                'price' => $stripePriceId,
+                'quantity' => $item->quantity(),
+            ];
         }
 
-        return null;
+        return $lineItems;
     }
 
     private function requireStripeCustomerId(Subscription $subscription): string

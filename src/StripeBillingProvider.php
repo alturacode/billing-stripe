@@ -147,8 +147,8 @@ final readonly class StripeBillingProvider implements BillingProvider
     {
         $priceMap = $this->idMapper->getExternalIds(
             'price',
+            'stripe',
             array_map(static fn($item) => $item->priceId()->value(), $subscription->items()),
-            'stripe'
         );
 
         $lineItems = [];

@@ -4,27 +4,31 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "100e176626f9f9fdb368f1793da90c50",
+    "content-hash": "de6334dc4899e788a22f7373e7e897c6",
     "packages": [
         {
             "name": "alturacode/billing-core",
-            "version": "v0.2.2",
+            "version": "v0.12.4",
             "source": {
                 "type": "git",
                 "url": "https://github.com/alturacode/billing-core.git",
-                "reference": "de4c8f930d1c82836d89c073d83af7ecb4c59abb"
+                "reference": "6cb7949fd986fec14c1424c1827f5cd85e0cd1e5"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/alturacode/billing-core/zipball/de4c8f930d1c82836d89c073d83af7ecb4c59abb",
-                "reference": "de4c8f930d1c82836d89c073d83af7ecb4c59abb",
+                "url": "https://api.github.com/repos/alturacode/billing-core/zipball/6cb7949fd986fec14c1424c1827f5cd85e0cd1e5",
+                "reference": "6cb7949fd986fec14c1424c1827f5cd85e0cd1e5",
                 "shasum": ""
             },
             "require": {
                 "php": ">=8.4",
-                "symfony/uid": "8.1.x-dev"
+                "symfony/uid": "^7.4"
+            },
+            "require-dev": {
+                "pestphp/pest": "^4.1"
             },
             "suggest": {
+                "alturacode/billing-laravel": "Laravel Billing Adapter for Altura Code Billing Package.",
                 "alturacode/billing-stripe": "Stripe Billing Adapter for Altura Code Billing Package."
             },
             "type": "library",
@@ -54,9 +58,9 @@
             ],
             "support": {
                 "issues": "https://github.com/alturacode/billing-core/issues",
-                "source": "https://github.com/alturacode/billing-core/tree/v0.2.2"
+                "source": "https://github.com/alturacode/billing-core/tree/v0.12.4"
             },
-            "time": "2025-12-03T03:30:37+00:00"
+            "time": "2025-12-10T19:33:21+00:00"
         },
         {
             "name": "stripe/stripe-php",
@@ -202,24 +206,24 @@
         },
         {
             "name": "symfony/uid",
-            "version": "8.1.x-dev",
+            "version": "v7.4.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/symfony/uid.git",
-                "reference": "8395a2cc2ed49aa68f602c5c489f60ab853893df"
+                "reference": "2498e9f81b7baa206f44de583f2f48350b90142c"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/symfony/uid/zipball/8395a2cc2ed49aa68f602c5c489f60ab853893df",
-                "reference": "8395a2cc2ed49aa68f602c5c489f60ab853893df",
+                "url": "https://api.github.com/repos/symfony/uid/zipball/2498e9f81b7baa206f44de583f2f48350b90142c",
+                "reference": "2498e9f81b7baa206f44de583f2f48350b90142c",
                 "shasum": ""
             },
             "require": {
-                "php": ">=8.4",
+                "php": ">=8.2",
                 "symfony/polyfill-uuid": "^1.15"
             },
             "require-dev": {
-                "symfony/console": "^7.4|^8.0"
+                "symfony/console": "^6.4|^7.0|^8.0"
             },
             "type": "library",
             "autoload": {
@@ -256,7 +260,7 @@
                 "uuid"
             ],
             "support": {
-                "source": "https://github.com/symfony/uid/tree/v8.0.0-RC1"
+                "source": "https://github.com/symfony/uid/tree/v7.4.0"
             },
             "funding": [
                 {
@@ -276,7 +280,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2025-09-26T07:52:19+00:00"
+            "time": "2025-09-25T11:02:55+00:00"
         }
     ],
     "packages-dev": [],

@@ -145,7 +145,7 @@ final readonly class StripeBillingProvider implements BillingProvider
 
     private function buildCheckoutLineItems(Subscription $subscription): array
     {
-        $priceMap = $this->idMapper->getExternalId(
+        $priceMap = $this->idMapper->getExternalIds(
             'price',
             array_map(static fn($item) => $item->priceId()->value(), $subscription->items()),
             'stripe'
@@ -172,7 +172,7 @@ final readonly class StripeBillingProvider implements BillingProvider
 
     private function requireStripeCustomerId(Subscription $subscription): string
     {
-        $stripeCustomerId = $this->idMapper->getExternalId('customer', $subscription->customerId()->value(), 'stripe');
+        $stripeCustomerId = $this->idMapper->getExternalId('customer', $subscription->billable()->id()->value(), 'stripe');
         if (!$stripeCustomerId) {
             throw new InvalidArgumentException('Missing Stripe customer id mapping for customer.');
         }

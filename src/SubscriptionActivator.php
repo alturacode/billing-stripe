@@ -4,10 +4,9 @@ declare(strict_types=1);
 
 namespace AlturaCode\Billing\Stripe;
 
-use AlturaCode\Billing\Core\SubscriptionItemId;
 use AlturaCode\Billing\Core\Subscriptions\Subscription;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionItemId;
 use DateTimeImmutable;
-use Symfony\Component\Uid\Ulid;
 
 final readonly class SubscriptionActivator
 {
@@ -21,7 +20,7 @@ final readonly class SubscriptionActivator
             $currentPeriodStart = $stripeItem->current_period_start;
             $currentPeriodEnd = $stripeItem->current_period_end;
             $subscription = $subscription->setItemPeriod(
-                itemId: new SubscriptionItemId(new Ulid($internalPriceId)),
+                itemId: SubscriptionItemId::fromString($internalPriceId),
                 currentPeriodStartsAt: new DateTimeImmutable("@$currentPeriodStart"),
                 currentPeriodEndsAt: new DateTimeImmutable("@$currentPeriodEnd"),
             );

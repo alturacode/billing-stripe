@@ -172,7 +172,7 @@ final readonly class StripeBillingProvider implements BillingProvider
 
     private function requireStripeCustomerId(Subscription $subscription): string
     {
-        $stripeCustomerId = $this->idMapper->getExternalId('customer', $subscription->billable()->id()->value(), 'stripe');
+        $stripeCustomerId = $this->idMapper->getExternalId('customer', $subscription->billable()->id(), 'stripe');
         if (!$stripeCustomerId) {
             throw new InvalidArgumentException('Missing Stripe customer id mapping for customer.');
         }

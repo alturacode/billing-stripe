@@ -4,90 +4,39 @@ declare(strict_types=1);
 
 namespace AlturaCode\Billing\Stripe;
 
+use AlturaCode\Billing\Core\Common\BillableDetails;
+use AlturaCode\Billing\Core\Common\BillableIdentity;
+use AlturaCode\Billing\Core\Products\Product;
+use AlturaCode\Billing\Core\Products\ProductPrice;
 use AlturaCode\Billing\Core\Provider\BillingProvider;
 use AlturaCode\Billing\Core\Provider\BillingProviderResult;
-use AlturaCode\Billing\Core\Provider\ExternalIdMapper;
+use AlturaCode\Billing\Core\Provider\CustomerAwareBillingProvider;
+use AlturaCode\Billing\Core\Provider\CustomerSyncResult;
+use AlturaCode\Billing\Core\Provider\PausableBillingProvider;
+use AlturaCode\Billing\Core\Provider\ProductAwareBillingProvider;
+use AlturaCode\Billing\Core\Provider\ProductSyncResult;
 use AlturaCode\Billing\Core\Subscriptions\Subscription;
-use InvalidArgumentException;
-use LogicException;
+use Exception;
 use Stripe\Exception\ApiErrorException;
 use Stripe\StripeClient;
 
-final readonly class StripeBillingProvider implements BillingProvider
+final readonly class StripeBillingProvider implements
+    BillingProvider,
+    CustomerAwareBillingProvider,
+    PausableBillingProvider,
+    ProductAwareBillingProvider
 {
     public function __construct(
-        private StripeClient     $stripeClient,
-        private ExternalIdMapper $idMapper
+        private StripeClient       $stripeClient,
+        private StripeIdStore      $ids,
+        private CreateSubscription $createSubscription,
     )
     {
     }
 
-    /**
-     * @throws ApiErrorException
-     */
     public function create(Subscription $subscription, array $options = []): BillingProviderResult
     {
-        $customerId = $this->requireStripeCustomerId($subscription);
-
-        $successUrl = $options['success_url'] ?? null;
-        $cancelUrl = $options['cancel_url'] ?? null;
-
-        if (!$successUrl || !$cancelUrl) {
-            throw new InvalidArgumentException('Missing required Checkout URLs: provide both success_url and cancel_url in options.');
-        }
-
-        $lineItems = $this->buildCheckoutLineItems($subscription);
-
-        $params = [
-            'mode' => 'subscription',
-            'customer' => $customerId,
-            'line_items' => $lineItems,
-            'success_url' => $successUrl,
-            'cancel_url' => $cancelUrl,
-            'client_reference_id' => $subscription->id()->value(),
-            'metadata' => [
-                'internal_subscription_id' => $subscription->id()->value(),
-            ],
-        ];
-
-        // Optional flags passed through from $options when provided
-        foreach (['allow_promotion_codes', 'locale'] as $optKey) {
-            if (array_key_exists($optKey, $options)) {
-                $params[$optKey] = $options[$optKey];
-            }
-        }
-
-        // Allow passing subscription-level options supported by Checkout via subscription_data
-        $subscriptionData = [];
-        foreach ([
-                     'proration_behavior',
-                     'default_payment_method',
-                     'coupon',
-                 ] as $optKey) {
-            if (array_key_exists($optKey, $options)) {
-                $subscriptionData[$optKey] = $options[$optKey];
-            }
-        }
-
-        if ($subscription->cancelAtPeriodEnd()) {
-            $subscriptionData['cancel_at_period_end'] = true;
-        }
-
-        if ($subscription->trialEndsAt() !== null) {
-            $subscriptionData['trial_end'] = $subscription->trialEndsAt()->getTimestamp();
-        }
-
-        if (!empty($subscriptionData)) {
-            $params['subscription_data'] = $subscriptionData;
-        }
-
-        $session = $this->stripeClient->checkout->sessions->create($params);
-
-        if (!empty($session->url)) {
-            return BillingProviderResult::redirect($subscription, $session->url);
-        }
-
-        throw new LogicException('Failed to create Stripe Checkout session or missing session URL.');
+        return $this->createSubscription->create($subscription, $options);
     }
 
     /**
@@ -95,7 +44,7 @@ final readonly class StripeBillingProvider implements BillingProvider
      */
     public function cancel(Subscription $subscription, bool $atPeriodEnd, array $options): BillingProviderResult
     {
-        $stripeSubscriptionId = $this->requireStripeSubscriptionId($subscription);
+        $stripeSubscriptionId = $this->ids->requireSubscriptionId($subscription);
 
         if ($atPeriodEnd) {
             $this->stripeClient->subscriptions->update($stripeSubscriptionId, ['cancel_at_period_end' => true]);
@@ -111,7 +60,7 @@ final readonly class StripeBillingProvider implements BillingProvider
      */
     public function pause(Subscription $subscription, array $options): BillingProviderResult
     {
-        $stripeSubscriptionId = $this->requireStripeSubscriptionId($subscription);
+        $stripeSubscriptionId = $this->ids->requireSubscriptionId($subscription);
 
         /** @var string $behavior */
         $behavior = $options['pause_behavior'] ?? 'mark_uncollectible';
@@ -122,6 +71,7 @@ final readonly class StripeBillingProvider implements BillingProvider
                 'behavior' => $behavior,
             ],
         ]);
+
         return BillingProviderResult::completed($subscription->pause());
     }
 
@@ -130,7 +80,7 @@ final readonly class StripeBillingProvider implements BillingProvider
      */
     public function resume(Subscription $subscription, array $options): BillingProviderResult
     {
-        $stripeSubscriptionId = $this->requireStripeSubscriptionId($subscription);
+        $stripeSubscriptionId = $this->ids->requireSubscriptionId($subscription);
 
         if (!empty($options['clear_cancel_at_period_end'])) {
             $update['cancel_at_period_end'] = false;
@@ -143,50 +93,117 @@ final readonly class StripeBillingProvider implements BillingProvider
         return BillingProviderResult::completed($subscription->resume());
     }
 
-    private function buildCheckoutLineItems(Subscription $subscription): array
+    public function syncCustomer(
+        BillableIdentity $billable,
+        ?BillableDetails $details = null,
+        array            $options = []
+    ): CustomerSyncResult
     {
-        $priceMap = $this->idMapper->getExternalIds(
-            'price',
-            'stripe',
-            array_map(static fn($item) => $item->priceId()->value(), $subscription->items()),
+        $stripeCustomerId = $this->ids->getCustomerId($billable);
+
+        $data = [
+            'email' => $details->email(),
+            'phone' => $details->phone(),
+            'name' => $details->displayName(),
+            'preferred_locales' => $details->locales(),
+        ];
+
+        if (!$stripeCustomerId) {
+            $stripeCustomer = $this->stripeClient->customers->create($data);
+            $this->ids->storeCustomerId($billable, $stripeCustomer->id);
+            return CustomerSyncResult::completed($stripeCustomer->id, [
+                'customer' => $stripeCustomer,
+            ]);
+        }
+
+        $stripeCustomer = $this->stripeClient->customers->update($stripeCustomerId, $data);
+        return CustomerSyncResult::completed($stripeCustomerId, [
+            'customer' => $stripeCustomer,
+        ]);
+    }
+
+    public function syncProduct(Product $product, array $options = []): ProductSyncResult
+    {
+        $stripeProductId = $this->ids->getProductId($product->id()->value());
+        return $this->syncProductWithStripe(ProductSyncResult::makeEmpty(), $product, $stripeProductId);
+    }
+
+    /**
+     * @throws ApiErrorException
+     */
+    public function syncProducts(array $products, array $options = []): ProductSyncResult
+    {
+        $internalToStripeIdMap = $this->ids->getProductIds(
+            array_map(fn(Product $product) => $product->id()->value(), $products)
         );
 
-        $lineItems = [];
-        foreach ($subscription->items() as $item) {
-            $internalPriceId = (string)$item->priceId();
-            $stripePriceId = $priceMap[$internalPriceId] ?? null;
-            if (!$stripePriceId) {
-                throw new InvalidArgumentException(
-                    sprintf('Missing Stripe price for internal price id %s. Provide a mapping via ExternalIdMapper.', $internalPriceId)
-                );
+        $result = ProductSyncResult::makeEmpty();
+
+        foreach ($products as $product) {
+            $stripeProductId = $internalToStripeIdMap[$product->id()->value()] ?? null;
+            $result = $this->syncProductWithStripe($result, $product, $stripeProductId);
+        }
+
+        return $result;
+    }
+
+    private function syncProductWithStripe(ProductSyncResult $result, Product $product, ?string $stripeProductId): ProductSyncResult
+    {
+        $data = [
+            'name' => $product->name(),
+            'description' => $product->description(),
+            'active' => true, // @todo add once core implements product lifecycle
+            'metadata' => [
+                'internal_product_id' => $product->id()->value(),
+            ],
+        ];
+
+        try {
+            if (!$stripeProductId) {
+                $stripeProduct = $this->stripeClient->products->create($data);
+                $stripeProductId = $stripeProduct->id;
+                $this->ids->storeProductId($product->id()->value(), $stripeProductId);
+            } else {
+                $this->stripeClient->products->update($stripeProductId, $data);
             }
-
-            $lineItems[] = [
-                'price' => $stripePriceId,
-                'quantity' => $item->quantity(),
-            ];
+        } catch (Exception $e) {
+            $result = $result->markFailedProduct($product->id()->value(), $e->getMessage());
         }
 
-        return $lineItems;
+        $result = $result->markSyncedProduct($product->id()->value(), $stripeProductId);
+        return $this->syncProductPricesWithStripe($result, $stripeProductId, $product->prices());
     }
 
-    private function requireStripeCustomerId(Subscription $subscription): string
+    private function syncProductPricesWithStripe(ProductSyncResult $result, string $stripeProductId, array $prices): ProductSyncResult
     {
-        $stripeCustomerId = $this->idMapper->getExternalId('customer', $subscription->billable()->id(), 'stripe');
-        if (!$stripeCustomerId) {
-            throw new InvalidArgumentException('Missing Stripe customer id mapping for customer.');
+        $internalToStripeIdMap = $this->ids->getPriceIds(
+            array_map(fn(ProductPrice $price) => $price->id()->value(), $prices)
+        );
+
+        foreach ($prices as $price) {
+            $stripePriceId = $internalToStripeIdMap[$price->id()->value()] ?? null;
+
+            // Currently, we only sync by creating the price if it doesn't exist'. We don't delete or update prices.
+            if (!$stripePriceId) {
+                try {
+                    $stripePrice = $this->stripeClient->prices->create([
+                        'recurring' => [
+                            'interval' => $price->interval()->type(),
+                            'interval_count' => $price->interval()->count(),
+                        ],
+                        'unit_amount' => $price->price()->amount(),
+                        'currency' => $price->price()->currency(),
+                        'product' => $stripeProductId,
+                        'active' => true,
+                    ]);
+                    $this->ids->storePriceId($price->id()->value(), $stripePrice->id);
+                    $result = $result->markSyncedPrice($price->id()->value(), $stripePrice->id);
+                } catch (Exception $e) {
+                    $result = $result->markFailedPrice($price->id()->value(), $e->getMessage());
+                }
+            }
         }
 
-        return $stripeCustomerId;
-    }
-
-    private function requireStripeSubscriptionId(Subscription $subscription): string
-    {
-        $stripeSubscriptionId = $this->idMapper->getExternalId('subscription', $subscription->id()->value(), 'stripe');
-        if (!$stripeSubscriptionId) {
-            throw new InvalidArgumentException('Missing Stripe subscription id mapping for subscription.');
-        }
-
-        return $stripeSubscriptionId;
+        return $result;
     }
 }

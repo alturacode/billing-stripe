@@ -8,6 +8,11 @@
       "AlturaCode\\Billing\\Stripe\\": "src/"
     }
   },
+  "autoload-dev": {
+    "psr-4": {
+      "Tests\\": "tests/"
+    }
+  },
   "authors": [
     {
       "name": "Gerardo Baez",
@@ -19,6 +24,15 @@
   "require": {
     "php": "^8.2",
     "stripe/stripe-php": "^19.0",
-    "alturacode/billing-core": "^0.15.0"
+    "alturacode/billing-core": "^0.19.0"
+  },
+  "require-dev": {
+    "pestphp/pest": "^4.1",
+    "vlucas/phpdotenv": "^5.6"
+  },
+  "config": {
+    "allow-plugins": {
+      "pestphp/pest-plugin": true
+    }
   }
 }

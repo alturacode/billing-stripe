@@ -6,7 +6,6 @@ namespace AlturaCode\Billing\Stripe;
 
 use AlturaCode\Billing\Core\Provider\BillingProviderResult;
 use AlturaCode\Billing\Core\Subscriptions\Subscription;
-use AlturaCode\Billing\Core\Subscriptions\SubscriptionItem;
 use InvalidArgumentException;
 use LogicException;
 use Stripe\StripeClient;
@@ -96,7 +95,11 @@ final readonly class CreateSubscriptionUsingCheckout implements CreateSubscripti
         $lineItems = [];
         foreach ($subscription->items() as $item) {
             $internalPriceId = (string)$item->priceId();
-            $stripePriceId = $priceMap[$internalPriceId] ?? $this->createStripePriceAndGetId($item);
+            $stripePriceId = $priceMap[$internalPriceId] ?? null;
+
+            if (!$stripePriceId) {
+                throw new MissingStripeIdMapping($internalPriceId);
+            }
 
             $lineItems[] = [
                 'price' => $stripePriceId,
@@ -105,10 +108,5 @@ final readonly class CreateSubscriptionUsingCheckout implements CreateSubscripti
         }
 
         return $lineItems;
-    }
-
-    private function createStripePriceAndGetId(SubscriptionItem $item): string
-    {
-
     }
 }

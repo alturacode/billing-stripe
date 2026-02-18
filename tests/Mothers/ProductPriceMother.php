@@ -24,4 +24,13 @@ final readonly class ProductPriceMother
             interval: ProductPriceInterval::monthly(),
         );
     }
+
+    public static function createFree(): ProductPrice
+    {
+        return ProductPrice::create(
+            id: ProductPriceId::generate(),
+            price: Money::usd(0),
+            interval: ProductPriceInterval::monthly(),
+        );
+    }
 }

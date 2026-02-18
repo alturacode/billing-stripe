@@ -16,6 +16,7 @@ use AlturaCode\Billing\Core\Provider\PausableBillingProvider;
 use AlturaCode\Billing\Core\Provider\ProductAwareBillingProvider;
 use AlturaCode\Billing\Core\Provider\ProductSyncResult;
 use AlturaCode\Billing\Core\Subscriptions\Subscription;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionRepository;
 use Exception;
 use Stripe\Exception\ApiErrorException;
 use Stripe\StripeClient;
@@ -30,12 +31,19 @@ final readonly class StripeBillingProvider implements
         private StripeClient       $stripeClient,
         private StripeIdStore      $ids,
         private CreateSubscription $createSubscription,
+        private SubscriptionRepository $subscriptionRepository,
     )
     {
     }
 
     public function create(Subscription $subscription, array $options = []): BillingProviderResult
     {
+        if ($subscription->isFree()) {
+            $subscription = $subscription->activate();
+            $this->subscriptionRepository->save($subscription);
+            return BillingProviderResult::completed($subscription);
+        }
+
         return $this->createSubscription->create($subscription, $options);
     }
 

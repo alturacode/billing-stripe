@@ -4,6 +4,11 @@ use AlturaCode\Billing\Core\Common\BillableIdentity;
 use AlturaCode\Billing\Core\Common\Currency;
 use AlturaCode\Billing\Core\Products\ProductPriceInterval;
 use AlturaCode\Billing\Core\Provider\MemoryExternalIdMapper;
+use AlturaCode\Billing\Core\Subscriptions\Subscription;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionId;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionItemId;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionName;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionRepository;
 use AlturaCode\Billing\Core\Subscriptions\SubscriptionStatus;
 use AlturaCode\Billing\Stripe\CreateSubscriptionUsingCheckout;
 use AlturaCode\Billing\Stripe\StripeBillingProvider;
@@ -35,7 +40,38 @@ beforeEach(function () {
         createSubscription: new CreateSubscriptionUsingCheckout(
             stripeClient: $this->stripe,
             idStore: $idStore
-        )
+        ),
+        subscriptionRepository: new class implements SubscriptionRepository {
+            private array $subscriptionsById = [];
+            private array $subscriptionIdsByBillable = [];
+            public function find(SubscriptionId $subscriptionId): ?Subscription
+            {
+                return $this->subscriptionsById[(string) $subscriptionId] ?? null;
+            }
+
+            public function findByItemId(SubscriptionItemId $itemId): ?Subscription
+            {
+                return $this->subscriptionsById[(string) $itemId] ?? null;
+            }
+
+            public function save(Subscription $subscription): void
+            {
+                $this->subscriptionsById[(string) $subscription->id()] = $subscription;
+                $this->subscriptionIdsByBillable[$subscription->billable()->id()][] = (string) $subscription->id();
+            }
+
+            public function findForBillable(BillableIdentity $billable, SubscriptionName $subscriptionName): ?Subscription
+            {
+                $ids = $this->subscriptionIdsByBillable[$billable->id()] ?? null;
+                return $ids ? $this->find(SubscriptionId::fromString($ids[0])) : null;
+            }
+
+            public function findAllForBillable(BillableIdentity $billable): array
+            {
+                $ids = $this->subscriptionIdsByBillable[$billable->id()] ?? [];
+                return array_map(fn ($id) => $this->find(SubscriptionId::fromString($id)), $ids);
+            }
+        },
     );
 });
 
@@ -76,7 +112,20 @@ test('sync product', function () {
         ->and($stripePrice->currency)->toBe($price->price()->currency()->code());
 });
 
-test('creates a subscription', function () {
+test('creates a free subscription', function () {
+    $product = ProductMother::createPlan()->withPrices(ProductPriceMother::createFree());
+    $price = $product->findPriceForIntervalAndCurrency(ProductPriceInterval::monthly(), Currency::usd());
+    $subscription = SubscriptionMother::create()->withPrimaryItem(SubscriptionItemMother::fromProductPrice($price));
+
+    $this->provider->syncCustomer($subscription->billable(), BillableDetailsMother::createMinimal());
+    $result = $this->provider->create($subscription);
+
+    expect($result->subscription->id()->value())->toBe($subscription->id()->value())
+        ->and($result->subscription->status())->toBe(SubscriptionStatus::Active)
+        ->and($result->requiresAction())->toBeFalse();
+});
+
+test('creates a paid subscription', function () {
     $product = ProductMother::createPlan()->withPrices(ProductPriceMother::createMonthly());
     $price = $product->findPriceForIntervalAndCurrency(ProductPriceInterval::monthly(), Currency::usd());
     $subscription = SubscriptionMother::create()->withItems(SubscriptionItemMother::fromProductPrice($price));

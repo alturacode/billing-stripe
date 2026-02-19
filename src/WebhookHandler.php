@@ -31,7 +31,7 @@ final readonly class WebhookHandler
         $stripeSub = $object;
 
         // Map Stripe subscription id -> internal subscription id
-        $internalId = $this->idMapper->getInternalId('subscription', $stripeSub->id, 'stripe');
+        $internalId = $this->idMapper->getInternalId('subscription', 'stripe', $stripeSub->id);
         if (!$internalId || !is_string($internalId)) {
             // Unknown subscription mapping; nothing to sync
             return;
@@ -44,8 +44,6 @@ final readonly class WebhookHandler
 
         $status = (string)($stripeSub->status ?? '');
         $isCanceled = $type === 'customer.subscription.deleted' || $status === 'canceled';
-        $cancelAtPeriodEnd = (bool)($stripeSub->cancel_at_period_end ?? false);
-        $isPaused = isset($stripeSub->pause_collection) && $stripeSub->pause_collection !== null;
 
         // Apply state changes based on event/status
         if ($isCanceled) {
@@ -55,22 +53,19 @@ final readonly class WebhookHandler
             return;
         }
 
-        if ($cancelAtPeriodEnd) {
-            $updated = $subscription->cancel(true);
-            $this->subscriptionRepository->save($updated);
-            return;
-        }
-
-        if ($isPaused) {
-            $updated = $subscription->pause();
-            $this->subscriptionRepository->save($updated);
-            return;
-        }
-
         // Activated or resumed (active/trialing without pause and not canceling at the period end)
         if (in_array($status, ['active', 'trialing'], true)) {
-            $updated = SubscriptionActivator::activate($stripeSub, $subscription);
-            $this->subscriptionRepository->save($updated);
+            $subscription = SubscriptionActivator::activate($stripeSub, $subscription);
         }
+
+        if (($stripeSub->cancel_at_period_end ?? false)) {
+            $subscription = $subscription->cancel(true);
+        }
+
+        if (isset($stripeSub->pause_collection) && $stripeSub->pause_collection !== null) {
+            $subscription = $subscription->pause();
+        }
+
+        $this->subscriptionRepository->save($subscription);
     }
 }

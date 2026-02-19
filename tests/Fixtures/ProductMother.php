@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tests\Mothers;
+namespace Tests\Fixtures;
 
 use AlturaCode\Billing\Core\Products\Product;
 use AlturaCode\Billing\Core\Products\ProductId;

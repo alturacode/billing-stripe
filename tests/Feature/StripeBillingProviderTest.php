@@ -14,11 +14,12 @@ use AlturaCode\Billing\Stripe\CreateSubscriptionUsingCheckout;
 use AlturaCode\Billing\Stripe\StripeBillingProvider;
 use AlturaCode\Billing\Stripe\StripeIdStore;
 use Stripe\StripeClient;
-use Tests\Mothers\BillableDetailsMother;
-use Tests\Mothers\ProductMother;
-use Tests\Mothers\ProductPriceMother;
-use Tests\Mothers\SubscriptionItemMother;
-use Tests\Mothers\SubscriptionMother;
+use Tests\Fixtures\BillableDetailsMother;
+use Tests\Fixtures\InMemorySubscriptionRepository;
+use Tests\Fixtures\ProductMother;
+use Tests\Fixtures\ProductPriceMother;
+use Tests\Fixtures\SubscriptionItemMother;
+use Tests\Fixtures\SubscriptionMother;
 
 beforeEach(function () {
     $stripeSecret = $_ENV['STRIPE_SECRET'];
@@ -41,37 +42,7 @@ beforeEach(function () {
             stripeClient: $this->stripe,
             idStore: $idStore
         ),
-        subscriptionRepository: new class implements SubscriptionRepository {
-            private array $subscriptionsById = [];
-            private array $subscriptionIdsByBillable = [];
-            public function find(SubscriptionId $subscriptionId): ?Subscription
-            {
-                return $this->subscriptionsById[(string) $subscriptionId] ?? null;
-            }
-
-            public function findByItemId(SubscriptionItemId $itemId): ?Subscription
-            {
-                return $this->subscriptionsById[(string) $itemId] ?? null;
-            }
-
-            public function save(Subscription $subscription): void
-            {
-                $this->subscriptionsById[(string) $subscription->id()] = $subscription;
-                $this->subscriptionIdsByBillable[$subscription->billable()->id()][] = (string) $subscription->id();
-            }
-
-            public function findForBillable(BillableIdentity $billable, SubscriptionName $subscriptionName): ?Subscription
-            {
-                $ids = $this->subscriptionIdsByBillable[$billable->id()] ?? null;
-                return $ids ? $this->find(SubscriptionId::fromString($ids[0])) : null;
-            }
-
-            public function findAllForBillable(BillableIdentity $billable): array
-            {
-                $ids = $this->subscriptionIdsByBillable[$billable->id()] ?? [];
-                return array_map(fn ($id) => $this->find(SubscriptionId::fromString($id)), $ids);
-            }
-        },
+        subscriptionRepository: new InMemorySubscriptionRepository(),
     );
 });
 

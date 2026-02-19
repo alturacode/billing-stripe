@@ -104,6 +104,10 @@ final readonly class CreateSubscriptionUsingCheckout implements CreateSubscripti
             $lineItems[] = [
                 'price' => $stripePriceId,
                 'quantity' => $item->quantity(),
+                'metadata' => [
+                    'internal_item_id' => $item->id()->value(),
+                    'internal_price_id' => $internalPriceId,
+                ],
             ];
         }
 

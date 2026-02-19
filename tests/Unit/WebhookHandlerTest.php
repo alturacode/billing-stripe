@@ -130,7 +130,7 @@ it('handles cancel_at_period_end', function () {
                         [
                             'id' => 'si_123',
                             'metadata' => [
-                                'internal_price_id' => $itemId
+                                'internal_item_id' => $itemId
                             ],
                             'current_period_start' => time(),
                             'current_period_end' => time() + 3600,
@@ -178,7 +178,7 @@ it('handles paused subscription', function () {
                         [
                             'id' => 'si_123',
                             'metadata' => [
-                                'internal_price_id' => $itemId
+                                'internal_item_id' => $itemId
                             ],
                             'current_period_start' => time(),
                             'current_period_end' => time() + 3600,
@@ -225,7 +225,7 @@ it('handles resuming a paused subscription', function () {
                         [
                             'id' => 'si_123',
                             'metadata' => [
-                                'internal_price_id' => $itemId
+                                'internal_item_id' => $itemId
                             ],
                             'current_period_start' => time(),
                             'current_period_end' => time() + 3600,
@@ -246,7 +246,7 @@ it('handles resuming a paused subscription', function () {
 it('activates and syncs periods for active subscription', function () {
     $itemId = (string)SubscriptionItemId::generate();
     // We need to ensure the item ID in the internal subscription matches what SubscriptionActivator expects.
-    // SubscriptionActivator uses $stripeItem->metadata->internal_price_id as SubscriptionItemId.
+    // SubscriptionActivator uses $stripeItem->metadata->internal_item_id as SubscriptionItemId.
 
     $item = SubscriptionItem::create(
         id: SubscriptionItemId::fromString($itemId),
@@ -275,7 +275,7 @@ it('activates and syncs periods for active subscription', function () {
                         [
                             'id' => 'si_123',
                             'metadata' => [
-                                'internal_price_id' => $itemId
+                                'internal_item_id' => $itemId
                             ],
                             'current_period_start' => $startsAt,
                             'current_period_end' => $endsAt,

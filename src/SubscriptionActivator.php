@@ -16,11 +16,11 @@ final readonly class SubscriptionActivator
         // with our internal subscription items. This synchronization ensures the periods
         // match between Stripe and our system before activating the subscription.
         foreach ($stripeSub->items->data as $stripeItem) {
-            $internalPriceId = $stripeItem->metadata->internal_price_id;
+            $internalItemId = $stripeItem->metadata->internal_item_id;
             $currentPeriodStart = $stripeItem->current_period_start;
             $currentPeriodEnd = $stripeItem->current_period_end;
             $subscription = $subscription->setItemPeriod(
-                itemId: SubscriptionItemId::fromString($internalPriceId),
+                itemId: SubscriptionItemId::fromString($internalItemId),
                 currentPeriodStartsAt: new DateTimeImmutable("@$currentPeriodStart"),
                 currentPeriodEndsAt: new DateTimeImmutable("@$currentPeriodEnd"),
             );

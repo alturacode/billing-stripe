@@ -41,11 +41,6 @@ final readonly class CreateSubscriptionUsingCheckout implements CreateSubscripti
             'success_url' => $successUrl,
             'cancel_url' => $cancelUrl,
             'client_reference_id' => $subscription->id()->value(),
-            'subscription_data' => [
-                'metadata' => [
-                    'internal_subscription_id' => $subscription->id()->value(),
-                ],
-            ]
         ];
 
         // Optional flags passed through from $options when provided
@@ -56,7 +51,12 @@ final readonly class CreateSubscriptionUsingCheckout implements CreateSubscripti
         }
 
         // Allow passing subscription-level options supported by Checkout via subscription_data
-        $subscriptionData = [];
+        $subscriptionData = [
+            'metadata' => [
+                'internal_subscription_id' => $subscription->id()->value(),
+            ],
+        ];
+
         foreach ([
                      'proration_behavior',
                      'default_payment_method',

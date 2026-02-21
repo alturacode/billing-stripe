@@ -41,9 +41,11 @@ final readonly class CreateSubscriptionUsingCheckout implements CreateSubscripti
             'success_url' => $successUrl,
             'cancel_url' => $cancelUrl,
             'client_reference_id' => $subscription->id()->value(),
-            'metadata' => [
-                'internal_subscription_id' => $subscription->id()->value(),
-            ],
+            'subscription_data' => [
+                'metadata' => [
+                    'internal_subscription_id' => $subscription->id()->value(),
+                ],
+            ]
         ];
 
         // Optional flags passed through from $options when provided

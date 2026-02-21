@@ -115,9 +115,11 @@ it('creates a checkout session and returns redirect result', function () {
         'success_url' => 'https://example.com/success',
         'cancel_url' => 'https://example.com/cancel',
         'client_reference_id' => $subscription->id()->value(),
-        'metadata' => [
-            'internal_subscription_id' => $subscription->id()->value(),
-        ],
+        'subscription_data' => [
+            'metadata' => [
+                'internal_subscription_id' => $subscription->id()->value(),
+            ],
+        ]
     ];
 
     $mockSession = (object)['url' => 'https://checkout.stripe.com/pay/session_123'];

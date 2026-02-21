@@ -11,14 +11,20 @@ use AlturaCode\Billing\Core\Subscriptions\SubscriptionItemId;
 use AlturaCode\Billing\Stripe\WebhookHandler;
 use Stripe\Event;
 use Tests\Fixtures\InMemorySubscriptionRepository;
+use Tests\Fixtures\SpyLogger;
 use Tests\Fixtures\SubscriptionItemMother;
 use Tests\Fixtures\SubscriptionMother;
 
 beforeEach(function () {
     $this->repository = new InMemorySubscriptionRepository();
     $this->idMapper = new MemoryExternalIdMapper();
-    $this->handler = new WebhookHandler($this->repository, $this->idMapper);
+    $this->logger = new SpyLogger();
+    $this->handler = new WebhookHandler($this->repository, $this->idMapper, $this->logger);
 });
+
+// ---------------------------------------------------------------------------
+// General / Non-subscription events
+// ---------------------------------------------------------------------------
 
 it('ignores events with non-subscription objects', function () {
     $event = Event::constructFrom([
@@ -36,8 +42,326 @@ it('ignores events with non-subscription objects', function () {
     expect($this->repository->findAllForBillable(SubscriptionMother::create()->billable()))->toBeEmpty();
 });
 
-it('ignores unknown subscriptions', function () {
-    // We store one unrelated subscription to avoid "Undefined array key" in MemoryExternalIdMapper
+it('logs debug message for non-subscription events', function () {
+    $event = Event::constructFrom([
+        'type' => 'customer.created',
+        'data' => [
+            'object' => [
+                'id' => 'cus_123',
+                'object' => 'customer',
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+
+    expect($this->logger->hasLogThatContains('debug', 'ignoring non-subscription event'))->toBeTrue();
+});
+
+it('logs debug message for unhandled subscription event types', function () {
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.trial_will_end',
+        'data' => [
+            'object' => [
+                'id' => 'sub_123',
+                'object' => 'subscription',
+                'status' => 'trialing',
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+
+    expect($this->logger->hasLogThatContains('debug', 'unhandled subscription event type'))->toBeTrue();
+});
+
+it('works without a logger (defaults to NullLogger)', function () {
+    $handler = new WebhookHandler($this->repository, $this->idMapper);
+
+    $event = Event::constructFrom([
+        'type' => 'customer.created',
+        'data' => [
+            'object' => [
+                'id' => 'cus_123',
+                'object' => 'customer',
+            ]
+        ]
+    ]);
+
+    // Should not throw
+    $handler->handle($event);
+    expect(true)->toBeTrue();
+});
+
+// ---------------------------------------------------------------------------
+// customer.subscription.created
+// ---------------------------------------------------------------------------
+
+it('handles customer.subscription.created: stores mapping and activates subscription', function () {
+    $itemId = (string) SubscriptionItemId::generate();
+    $item = SubscriptionItem::create(
+        id: SubscriptionItemId::fromString($itemId),
+        priceId: ProductPriceId::generate(),
+        quantity: 1,
+        price: Money::usd(1000),
+        interval: ProductPriceInterval::monthly(),
+    );
+    $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
+    $this->repository->save($subscription);
+    // Seed mapper so getInternalId won't warn on empty map
+    $this->idMapper->store('subscription', 'stripe', '__seed__', '__seed__');
+
+    $startsAt = time();
+    $endsAt = $startsAt + 3600;
+
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.created',
+        'data' => [
+            'object' => [
+                'id' => 'sub_new_123',
+                'object' => 'subscription',
+                'status' => 'active',
+                'metadata' => [
+                    'internal_subscription_id' => (string) $subscription->id(),
+                ],
+                'items' => [
+                    'data' => [
+                        [
+                            'id' => 'si_new_123',
+                            'metadata' => [
+                                'internal_item_id' => $itemId,
+                            ],
+                            'current_period_start' => $startsAt,
+                            'current_period_end' => $endsAt,
+                        ]
+                    ]
+                ]
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+
+    // Mapping was stored
+    $mappedInternalId = $this->idMapper->getInternalId('subscription', 'stripe', 'sub_new_123');
+    expect($mappedInternalId)->toBe((string) $subscription->id());
+
+    // Item mapping was stored
+    $mappedItemId = $this->idMapper->getInternalId('subscription_item', 'stripe', 'si_new_123');
+    expect($mappedItemId)->toBe($itemId);
+
+    // Subscription was activated
+    $updated = $this->repository->find($subscription->id());
+    expect($updated->isActive())->toBeTrue();
+
+    // Periods were synced
+    $updatedItem = $updated->primaryItem();
+    expect($updatedItem->currentPeriodStartsAt()->getTimestamp())->toBe($startsAt)
+        ->and($updatedItem->currentPeriodEndsAt()->getTimestamp())->toBe($endsAt);
+});
+
+it('handles customer.subscription.created with trialing status', function () {
+    $itemId = (string) SubscriptionItemId::generate();
+    $item = SubscriptionItem::create(
+        id: SubscriptionItemId::fromString($itemId),
+        priceId: ProductPriceId::generate(),
+        quantity: 1,
+        price: Money::usd(1000),
+        interval: ProductPriceInterval::monthly(),
+    );
+    $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
+    $this->repository->save($subscription);
+    $this->idMapper->store('subscription', 'stripe', '__seed__', '__seed__');
+
+    $startsAt = time();
+    $endsAt = $startsAt + 3600;
+
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.created',
+        'data' => [
+            'object' => [
+                'id' => 'sub_trial_123',
+                'object' => 'subscription',
+                'status' => 'trialing',
+                'metadata' => [
+                    'internal_subscription_id' => (string) $subscription->id(),
+                ],
+                'items' => [
+                    'data' => [
+                        [
+                            'id' => 'si_trial_123',
+                            'metadata' => [
+                                'internal_item_id' => $itemId,
+                            ],
+                            'current_period_start' => $startsAt,
+                            'current_period_end' => $endsAt,
+                        ]
+                    ]
+                ]
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+
+    $updated = $this->repository->find($subscription->id());
+    expect($updated->isActive())->toBeTrue();
+});
+
+it('handles customer.subscription.created: idempotent when mapping already exists', function () {
+    $itemId = (string) SubscriptionItemId::generate();
+    $item = SubscriptionItem::create(
+        id: SubscriptionItemId::fromString($itemId),
+        priceId: ProductPriceId::generate(),
+        quantity: 1,
+        price: Money::usd(1000),
+        interval: ProductPriceInterval::monthly(),
+    );
+    $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
+    $this->repository->save($subscription);
+
+    // Pre-store the mapping (simulating duplicate webhook delivery)
+    $this->idMapper->store('subscription', 'stripe', (string) $subscription->id(), 'sub_dup_123');
+
+    $startsAt = time();
+    $endsAt = $startsAt + 3600;
+
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.created',
+        'data' => [
+            'object' => [
+                'id' => 'sub_dup_123',
+                'object' => 'subscription',
+                'status' => 'active',
+                'metadata' => [
+                    'internal_subscription_id' => (string) $subscription->id(),
+                ],
+                'items' => [
+                    'data' => [
+                        [
+                            'id' => 'si_dup_123',
+                            'metadata' => [
+                                'internal_item_id' => $itemId,
+                            ],
+                            'current_period_start' => $startsAt,
+                            'current_period_end' => $endsAt,
+                        ]
+                    ]
+                ]
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+
+    // Should still activate without error
+    $updated = $this->repository->find($subscription->id());
+    expect($updated->isActive())->toBeTrue();
+});
+
+it('handles customer.subscription.created: ignores when no metadata internal_subscription_id', function () {
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.created',
+        'data' => [
+            'object' => [
+                'id' => 'sub_no_meta_123',
+                'object' => 'subscription',
+                'status' => 'active',
+                'metadata' => [],
+                'items' => [
+                    'data' => []
+                ]
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+
+    expect($this->logger->hasLogThatContains('warning', 'no internal subscription ID found'))->toBeTrue();
+});
+
+it('handles customer.subscription.created: logs warning when subscription not in repository', function () {
+    $nonExistentId = (string) \AlturaCode\Billing\Core\Subscriptions\SubscriptionId::generate();
+    $this->idMapper->store('subscription', 'stripe', '__seed__', '__seed__');
+
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.created',
+        'data' => [
+            'object' => [
+                'id' => 'sub_orphan_123',
+                'object' => 'subscription',
+                'status' => 'active',
+                'metadata' => [
+                    'internal_subscription_id' => $nonExistentId,
+                ],
+                'items' => [
+                    'data' => []
+                ]
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+
+    expect($this->logger->hasLogThatContains('warning', 'internal subscription not found for created event'))->toBeTrue();
+});
+
+it('handles customer.subscription.created: saves subscription even with incomplete status', function () {
+    $itemId = (string) SubscriptionItemId::generate();
+    $item = SubscriptionItem::create(
+        id: SubscriptionItemId::fromString($itemId),
+        priceId: ProductPriceId::generate(),
+        quantity: 1,
+        price: Money::usd(1000),
+        interval: ProductPriceInterval::monthly(),
+    );
+    $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
+    $this->repository->save($subscription);
+    $this->idMapper->store('subscription', 'stripe', '__seed__', '__seed__');
+
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.created',
+        'data' => [
+            'object' => [
+                'id' => 'sub_incomplete_123',
+                'object' => 'subscription',
+                'status' => 'incomplete',
+                'metadata' => [
+                    'internal_subscription_id' => (string) $subscription->id(),
+                ],
+                'items' => [
+                    'data' => [
+                        [
+                            'id' => 'si_incomplete_123',
+                            'metadata' => [
+                                'internal_item_id' => $itemId,
+                            ],
+                            'current_period_start' => time(),
+                            'current_period_end' => time() + 3600,
+                        ]
+                    ]
+                ]
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+
+    // Mapping stored
+    $mappedInternalId = $this->idMapper->getInternalId('subscription', 'stripe', 'sub_incomplete_123');
+    expect($mappedInternalId)->toBe((string) $subscription->id());
+
+    // Subscription is NOT activated (status is incomplete)
+    $updated = $this->repository->find($subscription->id());
+    expect($updated->isActive())->toBeFalse()
+        ->and($updated->isIncomplete())->toBeTrue();
+});
+
+// ---------------------------------------------------------------------------
+// customer.subscription.updated
+// ---------------------------------------------------------------------------
+
+it('ignores unknown subscriptions on updated event', function () {
     $this->idMapper->store('subscription', 'stripe', 'internal_123', 'sub_123');
 
     $event = Event::constructFrom([
@@ -52,39 +376,14 @@ it('ignores unknown subscriptions', function () {
     ]);
 
     $this->handler->handle($event);
-    // Should just return without error
     expect(true)->toBeTrue();
-});
-
-it('handles customer.subscription.deleted', function () {
-    $item = SubscriptionItemMother::createMonthly();
-    $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
-    $this->repository->save($subscription);
-    $this->idMapper->store('subscription', 'stripe', (string)$subscription->id(), 'sub_123');
-
-    $event = Event::constructFrom([
-        'type' => 'customer.subscription.deleted',
-        'data' => [
-            'object' => [
-                'id' => 'sub_123',
-                'object' => 'subscription',
-                'status' => 'canceled'
-            ]
-        ]
-    ]);
-
-    $this->handler->handle($event);
-
-    $updated = $this->repository->find($subscription->id());
-    expect($updated->isCanceled())->toBeTrue()
-        ->and($updated->canceledAt())->not()->toBeNull();
 });
 
 it('handles subscription canceled status in updated event', function () {
     $item = SubscriptionItemMother::createMonthly();
     $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
     $this->repository->save($subscription);
-    $this->idMapper->store('subscription', 'stripe', (string)$subscription->id(), 'sub_123');
+    $this->idMapper->store('subscription', 'stripe', (string) $subscription->id(), 'sub_123');
 
     $event = Event::constructFrom([
         'type' => 'customer.subscription.updated',
@@ -104,7 +403,7 @@ it('handles subscription canceled status in updated event', function () {
 });
 
 it('handles cancel_at_period_end', function () {
-    $itemId = (string)SubscriptionItemId::generate();
+    $itemId = (string) SubscriptionItemId::generate();
     $item = SubscriptionItem::create(
         id: SubscriptionItemId::fromString($itemId),
         priceId: ProductPriceId::generate(),
@@ -115,7 +414,7 @@ it('handles cancel_at_period_end', function () {
     $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
 
     $this->repository->save($subscription);
-    $this->idMapper->store('subscription', 'stripe', (string)$subscription->id(), 'sub_123');
+    $this->idMapper->store('subscription', 'stripe', (string) $subscription->id(), 'sub_123');
 
     $event = Event::constructFrom([
         'type' => 'customer.subscription.updated',
@@ -149,8 +448,8 @@ it('handles cancel_at_period_end', function () {
         ->and($updated->isActive())->toBeTrue();
 });
 
-it('handles paused subscription', function () {
-    $itemId = (string)SubscriptionItemId::generate();
+it('handles paused subscription via updated event', function () {
+    $itemId = (string) SubscriptionItemId::generate();
     $item = SubscriptionItem::create(
         id: SubscriptionItemId::fromString($itemId),
         priceId: ProductPriceId::generate(),
@@ -161,7 +460,7 @@ it('handles paused subscription', function () {
     $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
 
     $this->repository->save($subscription);
-    $this->idMapper->store('subscription', 'stripe', (string)$subscription->id(), 'sub_123');
+    $this->idMapper->store('subscription', 'stripe', (string) $subscription->id(), 'sub_123');
 
     $event = Event::constructFrom([
         'type' => 'customer.subscription.updated',
@@ -195,8 +494,8 @@ it('handles paused subscription', function () {
     expect($updated->isPaused())->toBeTrue();
 });
 
-it('handles resuming a paused subscription', function () {
-    $itemId = (string)SubscriptionItemId::generate();
+it('handles resuming a paused subscription via updated event', function () {
+    $itemId = (string) SubscriptionItemId::generate();
     $item = SubscriptionItem::create(
         id: SubscriptionItemId::fromString($itemId),
         priceId: ProductPriceId::generate(),
@@ -210,7 +509,7 @@ it('handles resuming a paused subscription', function () {
         ->pause();
 
     $this->repository->save($subscription);
-    $this->idMapper->store('subscription', 'stripe', (string)$subscription->id(), 'sub_123');
+    $this->idMapper->store('subscription', 'stripe', (string) $subscription->id(), 'sub_123');
 
     $event = Event::constructFrom([
         'type' => 'customer.subscription.updated',
@@ -244,10 +543,7 @@ it('handles resuming a paused subscription', function () {
 });
 
 it('activates and syncs periods for active subscription', function () {
-    $itemId = (string)SubscriptionItemId::generate();
-    // We need to ensure the item ID in the internal subscription matches what SubscriptionActivator expects.
-    // SubscriptionActivator uses $stripeItem->metadata->internal_item_id as SubscriptionItemId.
-
+    $itemId = (string) SubscriptionItemId::generate();
     $item = SubscriptionItem::create(
         id: SubscriptionItemId::fromString($itemId),
         priceId: ProductPriceId::generate(),
@@ -258,7 +554,7 @@ it('activates and syncs periods for active subscription', function () {
     $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
 
     $this->repository->save($subscription);
-    $this->idMapper->store('subscription', 'stripe', (string)$subscription->id(), 'sub_123');
+    $this->idMapper->store('subscription', 'stripe', (string) $subscription->id(), 'sub_123');
 
     $startsAt = time();
     $endsAt = $startsAt + 3600;
@@ -294,4 +590,169 @@ it('activates and syncs periods for active subscription', function () {
     $updatedItem = $updated->primaryItem();
     expect($updatedItem->currentPeriodStartsAt()->getTimestamp())->toBe($startsAt)
         ->and($updatedItem->currentPeriodEndsAt()->getTimestamp())->toBe($endsAt);
+});
+
+// ---------------------------------------------------------------------------
+// customer.subscription.deleted
+// ---------------------------------------------------------------------------
+
+it('handles customer.subscription.deleted', function () {
+    $item = SubscriptionItemMother::createMonthly();
+    $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
+    $this->repository->save($subscription);
+    $this->idMapper->store('subscription', 'stripe', (string) $subscription->id(), 'sub_123');
+
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.deleted',
+        'data' => [
+            'object' => [
+                'id' => 'sub_123',
+                'object' => 'subscription',
+                'status' => 'canceled'
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+
+    $updated = $this->repository->find($subscription->id());
+    expect($updated->isCanceled())->toBeTrue()
+        ->and($updated->canceledAt())->not()->toBeNull();
+});
+
+it('handles customer.subscription.deleted for unknown subscription without error', function () {
+    $this->idMapper->store('subscription', 'stripe', 'internal_123', 'sub_123');
+
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.deleted',
+        'data' => [
+            'object' => [
+                'id' => 'sub_unknown',
+                'object' => 'subscription',
+                'status' => 'canceled'
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+    expect(true)->toBeTrue();
+});
+
+// ---------------------------------------------------------------------------
+// customer.subscription.paused
+// ---------------------------------------------------------------------------
+
+it('handles customer.subscription.paused', function () {
+    $item = SubscriptionItemMother::createMonthly();
+    $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item)->activate();
+    $this->repository->save($subscription);
+    $this->idMapper->store('subscription', 'stripe', (string) $subscription->id(), 'sub_123');
+
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.paused',
+        'data' => [
+            'object' => [
+                'id' => 'sub_123',
+                'object' => 'subscription',
+                'status' => 'paused',
+                'pause_collection' => [
+                    'behavior' => 'void'
+                ],
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+
+    $updated = $this->repository->find($subscription->id());
+    expect($updated->isPaused())->toBeTrue();
+});
+
+it('handles customer.subscription.paused for unknown subscription without error', function () {
+    $this->idMapper->store('subscription', 'stripe', 'internal_123', 'sub_123');
+
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.paused',
+        'data' => [
+            'object' => [
+                'id' => 'sub_unknown',
+                'object' => 'subscription',
+                'status' => 'paused',
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+    expect(true)->toBeTrue();
+});
+
+// ---------------------------------------------------------------------------
+// customer.subscription.resumed
+// ---------------------------------------------------------------------------
+
+it('handles customer.subscription.resumed', function () {
+    $itemId = (string) SubscriptionItemId::generate();
+    $item = SubscriptionItem::create(
+        id: SubscriptionItemId::fromString($itemId),
+        priceId: ProductPriceId::generate(),
+        quantity: 1,
+        price: Money::usd(1000),
+        interval: ProductPriceInterval::monthly(),
+    );
+    $subscription = SubscriptionMother::create()
+        ->withItems($item)
+        ->withPrimaryItem($item)
+        ->pause();
+    $this->repository->save($subscription);
+    $this->idMapper->store('subscription', 'stripe', (string) $subscription->id(), 'sub_123');
+
+    $startsAt = time();
+    $endsAt = $startsAt + 3600;
+
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.resumed',
+        'data' => [
+            'object' => [
+                'id' => 'sub_123',
+                'object' => 'subscription',
+                'status' => 'active',
+                'items' => [
+                    'data' => [
+                        [
+                            'id' => 'si_123',
+                            'metadata' => [
+                                'internal_item_id' => $itemId,
+                            ],
+                            'current_period_start' => $startsAt,
+                            'current_period_end' => $endsAt,
+                        ]
+                    ]
+                ]
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+
+    $updated = $this->repository->find($subscription->id());
+    expect($updated->isActive())->toBeTrue()
+        ->and($updated->isPaused())->toBeFalse();
+});
+
+it('handles customer.subscription.resumed for unknown subscription without error', function () {
+    $this->idMapper->store('subscription', 'stripe', 'internal_123', 'sub_123');
+
+    $event = Event::constructFrom([
+        'type' => 'customer.subscription.resumed',
+        'data' => [
+            'object' => [
+                'id' => 'sub_unknown',
+                'object' => 'subscription',
+                'status' => 'active',
+            ]
+        ]
+    ]);
+
+    $this->handler->handle($event);
+    expect(true)->toBeTrue();
 });

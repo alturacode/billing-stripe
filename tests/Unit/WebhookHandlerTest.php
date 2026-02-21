@@ -6,8 +6,10 @@ use AlturaCode\Billing\Core\Common\Money;
 use AlturaCode\Billing\Core\Products\ProductPriceId;
 use AlturaCode\Billing\Core\Products\ProductPriceInterval;
 use AlturaCode\Billing\Core\Provider\MemoryExternalIdMapper;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionId;
 use AlturaCode\Billing\Core\Subscriptions\SubscriptionItem;
 use AlturaCode\Billing\Core\Subscriptions\SubscriptionItemId;
+use AlturaCode\Billing\Stripe\StripeIdStore;
 use AlturaCode\Billing\Stripe\WebhookHandler;
 use Stripe\Event;
 use Tests\Fixtures\InMemorySubscriptionRepository;
@@ -18,8 +20,15 @@ use Tests\Fixtures\SubscriptionMother;
 beforeEach(function () {
     $this->repository = new InMemorySubscriptionRepository();
     $this->idMapper = new MemoryExternalIdMapper();
+
+    // Seed mapper types so getInternalId won't throw on empty map
+    foreach (['subscription', 'subscription_item', 'price', 'product', 'customer'] as $type) {
+        $this->idMapper->store($type, 'stripe', '__seed__', '__seed__');
+    }
+
+    $this->idStore = new StripeIdStore($this->idMapper);
     $this->logger = new SpyLogger();
-    $this->handler = new WebhookHandler($this->repository, $this->idMapper, $this->logger);
+    $this->handler = new WebhookHandler($this->repository, $this->idStore, $this->logger);
 });
 
 // ---------------------------------------------------------------------------
@@ -76,7 +85,7 @@ it('logs debug message for unhandled subscription event types', function () {
 });
 
 it('works without a logger (defaults to NullLogger)', function () {
-    $handler = new WebhookHandler($this->repository, $this->idMapper);
+    $handler = new WebhookHandler($this->repository, $this->idStore);
 
     $event = Event::constructFrom([
         'type' => 'customer.created',
@@ -108,8 +117,6 @@ it('handles customer.subscription.created: stores mapping and activates subscrip
     );
     $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
     $this->repository->save($subscription);
-    // Seed mapper so getInternalId won't warn on empty map
-    $this->idMapper->store('subscription', 'stripe', '__seed__', '__seed__');
 
     $startsAt = time();
     $endsAt = $startsAt + 3600;
@@ -171,7 +178,6 @@ it('handles customer.subscription.created with trialing status', function () {
     );
     $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
     $this->repository->save($subscription);
-    $this->idMapper->store('subscription', 'stripe', '__seed__', '__seed__');
 
     $startsAt = time();
     $endsAt = $startsAt + 3600;
@@ -281,8 +287,7 @@ it('handles customer.subscription.created: ignores when no metadata internal_sub
 });
 
 it('handles customer.subscription.created: logs warning when subscription not in repository', function () {
-    $nonExistentId = (string) \AlturaCode\Billing\Core\Subscriptions\SubscriptionId::generate();
-    $this->idMapper->store('subscription', 'stripe', '__seed__', '__seed__');
+    $nonExistentId = (string) SubscriptionId::generate();
 
     $event = Event::constructFrom([
         'type' => 'customer.subscription.created',
@@ -317,7 +322,6 @@ it('handles customer.subscription.created: saves subscription even with incomple
     );
     $subscription = SubscriptionMother::create()->withItems($item)->withPrimaryItem($item);
     $this->repository->save($subscription);
-    $this->idMapper->store('subscription', 'stripe', '__seed__', '__seed__');
 
     $event = Event::constructFrom([
         'type' => 'customer.subscription.created',

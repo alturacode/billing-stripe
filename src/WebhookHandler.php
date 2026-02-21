@@ -20,7 +20,7 @@ final readonly class WebhookHandler
 
     public function __construct(
         private SubscriptionRepository $subscriptionRepository,
-        private ExternalIdMapper       $idMapper,
+        private StripeIdStore          $idStore,
         ?LoggerInterface               $logger = null,
     )
     {
@@ -85,20 +85,13 @@ final readonly class WebhookHandler
 
         // Store the mapping if it doesn't already exist
         try {
-            $existingMapping = $this->idMapper->getInternalId('subscription', 'stripe', $stripeSub->id);
+            $existingMapping = $this->idStore->getInternalSubscriptionId($stripeSub->id);
         } catch (\Throwable) {
             $existingMapping = null;
         }
-        if ($existingMapping === null) {
-            $this->idMapper->store('subscription', 'stripe', $internalId, $stripeSub->id);
 
-            // Also store item-level mappings
-            foreach ($stripeSub->items->data as $stripeItem) {
-                $internalItemId = $stripeItem->metadata->internal_item_id ?? null;
-                if ($internalItemId !== null) {
-                    $this->idMapper->store('subscription_item', 'stripe', $internalItemId, $stripeItem->id);
-                }
-            }
+        if ($existingMapping === null) {
+            $this->idStore->storeSubscriptionId($internalId, $stripeSub->id);
         }
 
         $subscription = $this->subscriptionRepository->find(SubscriptionId::fromString($internalId));
@@ -108,6 +101,11 @@ final readonly class WebhookHandler
                 'stripe_subscription_id' => $stripeSub->id,
             ]);
             return;
+        }
+
+        // Also store item-level mappings
+        if ($existingMapping === null) {
+            $this->storeSubscriptionItemMappings($stripeSub, $subscription);
         }
 
         // Activate if the subscription is in an activatable state
@@ -207,7 +205,7 @@ final readonly class WebhookHandler
 
     private function findSubscriptionByStripeId(string $stripeSubscriptionId): ?Subscription
     {
-        $internalId = $this->idMapper->getInternalId('subscription', 'stripe', $stripeSubscriptionId);
+        $internalId = $this->idStore->getInternalSubscriptionId($stripeSubscriptionId);
 
         if (!$internalId || !is_string($internalId)) {
             $this->logger->debug('WebhookHandler: no internal mapping for Stripe subscription.', [
@@ -233,16 +231,105 @@ final readonly class WebhookHandler
         // Loop through the stripe subscription items to sync their period (start/end)
         // with our internal subscription items. This synchronization ensures the periods
         // match between Stripe and our system before activating the subscription.
-        foreach ($stripeSub->items->data as $stripeItem) {
-            $internalItemId = $stripeItem->metadata->internal_item_id;
-            $currentPeriodStart = $stripeItem->current_period_start;
-            $currentPeriodEnd = $stripeItem->current_period_end;
+        foreach ($this->resolveSubscriptionItems($stripeSub, $subscription) as $resolved) {
+            $stripeItem = $resolved['stripe_item'];
+            $internalItemId = $resolved['internal_item_id'];
+
             $subscription = $subscription->setItemPeriod(
                 itemId: SubscriptionItemId::fromString($internalItemId),
-                currentPeriodStartsAt: new DateTimeImmutable("@$currentPeriodStart"),
-                currentPeriodEndsAt: new DateTimeImmutable("@$currentPeriodEnd"),
+                currentPeriodStartsAt: new DateTimeImmutable("@{$stripeItem->current_period_start}"),
+                currentPeriodEndsAt: new DateTimeImmutable("@{$stripeItem->current_period_end}"),
             );
         }
+
         return $subscription->activate();
+    }
+
+    private function storeSubscriptionItemMappings(\Stripe\Subscription $stripeSub, Subscription $subscription): void
+    {
+        $newMappings = [];
+
+        foreach ($this->resolveSubscriptionItems($stripeSub, $subscription) as $resolved) {
+            $newMappings[$resolved['internal_item_id']] = $resolved['stripe_item']->id;
+        }
+
+        if (!empty($newMappings)) {
+            $this->idStore->storeMultipleSubscriptionItemIdMappings($newMappings);
+        }
+    }
+
+    /**
+     * @return array<array{stripe_item: \Stripe\SubscriptionItem, internal_item_id: string}>
+     */
+    private function resolveSubscriptionItems(\Stripe\Subscription $stripeSub, Subscription $subscription): array
+    {
+        $stripeItems = $stripeSub->items->data;
+
+        $stripeItemIds = array_values(array_filter(array_map(fn($item) => $item->id ?? null, $stripeItems)));
+        $stripePriceIds = array_values(array_filter(array_unique(array_map(fn($item) => $item->price->id ?? null, $stripeItems))));
+
+        $itemIdsMapping = $this->idStore->getInternalSubscriptionItemIdMap($stripeItemIds);
+        $priceIdsMapping = $this->idStore->getInternalPriceIdMap($stripePriceIds);
+
+        $resolved = [];
+
+        foreach ($stripeItems as $stripeItem) {
+            $internalItemId = $this->resolveInternalItemId($stripeItem, $subscription, $itemIdsMapping, $priceIdsMapping);
+
+            if ($internalItemId === null) {
+                $this->logger->warning('WebhookHandler: could not resolve internal item ID for Stripe item.', [
+                    'stripe_item_id' => $stripeItem->id,
+                    'stripe_subscription_id' => $stripeSub->id,
+                ]);
+
+                continue;
+            }
+
+            $resolved[] = [
+                'stripe_item' => $stripeItem,
+                'internal_item_id' => $internalItemId,
+            ];
+        }
+
+        return $resolved;
+    }
+
+    private function resolveInternalItemId(
+        $stripeItem,
+        Subscription $subscription,
+        array $itemIdsMapping,
+        array $priceIdsMapping
+    ): ?string {
+        // 1. Try metadata (fallback for older subscriptions/other creation methods)
+        $internalItemId = $stripeItem->metadata->internal_item_id ?? null;
+        if ($internalItemId) {
+            return (string)$internalItemId;
+        }
+
+        // 2. Try stored mapping
+        $internalItemId = $itemIdsMapping[$stripeItem->id] ?? null;
+        if ($internalItemId) {
+            return (string)$internalItemId;
+        }
+
+        // 3. Try matching by price
+        $stripePriceId = $stripeItem->price->id ?? null;
+        $internalPriceId = $stripePriceId ? ($priceIdsMapping[$stripePriceId] ?? null) : null;
+        if ($internalPriceId) {
+            foreach ($subscription->items() as $item) {
+                if ((string)$item->priceId() === $internalPriceId && $item->quantity() === $stripeItem->quantity) {
+                    return (string)$item->id();
+                }
+            }
+
+            // If quantity doesn't match, still try matching by price as fallback
+            foreach ($subscription->items() as $item) {
+                if ((string)$item->priceId() === $internalPriceId) {
+                    return (string)$item->id();
+                }
+            }
+        }
+
+        return null;
     }
 }

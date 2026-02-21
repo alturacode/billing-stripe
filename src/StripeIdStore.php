@@ -37,9 +37,14 @@ final readonly class StripeIdStore
         return $stripeCustomerId;
     }
 
-    public function getSubscriptionId(Subscription $subscription): string
+    public function getSubscriptionId(Subscription $subscription): ?string
     {
         return $this->idMapper->getExternalId('subscription', 'stripe', $subscription->id()->value());
+    }
+
+    public function getInternalSubscriptionId(string $stripeSubscriptionId): ?string
+    {
+        return $this->idMapper->getInternalId('subscription', 'stripe', $stripeSubscriptionId);
     }
 
     public function requireSubscriptionId(Subscription $subscription): string
@@ -66,12 +71,41 @@ final readonly class StripeIdStore
         return $this->idMapper->getExternalIdMap('price', 'stripe', $internalIds);
     }
 
+    public function getInternalPriceIdMap(array $stripePriceIds): array
+    {
+        return $this->idMapper->getInternalIdMap('price', 'stripe', $stripePriceIds);
+    }
+
+    public function getInternalSubscriptionItemIdMap(array $stripeItemIds): array
+    {
+        return $this->idMapper->getInternalIdMap('subscription_item', 'stripe', $stripeItemIds);
+    }
+
     public function storeCustomerId(BillableIdentity $billable, string $id): void
     {
         $this->idMapper->store('customer', 'stripe', implode('_', [
             $billable->type(),
             $billable->id()
         ]), $id);
+    }
+
+    public function storeSubscriptionId(string $internalSubscriptionId, string $stripeSubscriptionId): void
+    {
+        $this->idMapper->store('subscription', 'stripe', $internalSubscriptionId, $stripeSubscriptionId);
+    }
+
+    public function storeMultipleSubscriptionItemIdMappings(array $mappings): void
+    {
+        $data = [];
+        foreach ($mappings as $internalId => $stripeId) {
+            $data[] = [
+                'type' => 'subscription_item',
+                'provider' => 'stripe',
+                'internalId' => $internalId,
+                'externalId' => $stripeId,
+            ];
+        }
+        $this->idMapper->storeMultiple($data);
     }
 
     public function storeProductId(string $internalProductId, string $stripeProductId): void

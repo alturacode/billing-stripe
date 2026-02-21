@@ -7,7 +7,9 @@ namespace AlturaCode\Billing\Stripe;
 use AlturaCode\Billing\Core\Provider\ExternalIdMapper;
 use AlturaCode\Billing\Core\Subscriptions\Subscription;
 use AlturaCode\Billing\Core\Subscriptions\SubscriptionId;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionItemId;
 use AlturaCode\Billing\Core\Subscriptions\SubscriptionRepository;
+use DateTimeImmutable;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Stripe\Event;
@@ -111,7 +113,7 @@ final readonly class WebhookHandler
         // Activate if the subscription is in an activatable state
         $status = (string) ($stripeSub->status ?? '');
         if (in_array($status, ['active', 'trialing'], true)) {
-            $subscription = SubscriptionActivator::activate($stripeSub, $subscription);
+            $subscription = $this->activateSubscription($stripeSub, $subscription);
         }
 
         $this->subscriptionRepository->save($subscription);
@@ -135,7 +137,7 @@ final readonly class WebhookHandler
 
         // Activate or sync periods for active/trialing
         if (in_array($status, ['active', 'trialing'], true)) {
-            $subscription = SubscriptionActivator::activate($stripeSub, $subscription);
+            $subscription = $this->activateSubscription($stripeSub, $subscription);
         }
 
         // Pending cancellation at period end
@@ -182,7 +184,7 @@ final readonly class WebhookHandler
 
         $status = (string) ($stripeSub->status ?? '');
         if (in_array($status, ['active', 'trialing'], true)) {
-            $subscription = SubscriptionActivator::activate($stripeSub, $subscription);
+            $subscription = $this->activateSubscription($stripeSub, $subscription);
         }
 
         $this->subscriptionRepository->save($subscription);
@@ -224,5 +226,23 @@ final readonly class WebhookHandler
         }
 
         return $subscription;
+    }
+
+    private function activateSubscription(\Stripe\Subscription $stripeSub, Subscription $subscription): Subscription
+    {
+        // Loop through the stripe subscription items to sync their period (start/end)
+        // with our internal subscription items. This synchronization ensures the periods
+        // match between Stripe and our system before activating the subscription.
+        foreach ($stripeSub->items->data as $stripeItem) {
+            $internalItemId = $stripeItem->metadata->internal_item_id;
+            $currentPeriodStart = $stripeItem->current_period_start;
+            $currentPeriodEnd = $stripeItem->current_period_end;
+            $subscription = $subscription->setItemPeriod(
+                itemId: SubscriptionItemId::fromString($internalItemId),
+                currentPeriodStartsAt: new DateTimeImmutable("@$currentPeriodStart"),
+                currentPeriodEndsAt: new DateTimeImmutable("@$currentPeriodEnd"),
+            );
+        }
+        return $subscription->activate();
     }
 }

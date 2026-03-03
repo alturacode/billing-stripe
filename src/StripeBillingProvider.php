@@ -277,4 +277,18 @@ final readonly class StripeBillingProvider implements
 
         return $result;
     }
+
+    /**
+     * @throws ApiErrorException
+     */
+    public function doNotCancel(Subscription $subscription, array $options): BillingProviderResult
+    {
+        $stripeSubscriptionId = $this->ids->requireSubscriptionId($subscription);
+
+        $this->stripeClient->subscriptions->update($stripeSubscriptionId, [
+            'cancel_at_period_end' => false,
+        ]);
+
+        return BillingProviderResult::completed($subscription->doNotCancel());
+    }
 }

@@ -239,3 +239,101 @@ test('swaps subscription item price from pro to basic (downgrade)', function () 
     $basicPriceStripeId = $this->provider->syncProduct($product)->syncedPriceIds()[$basicPrice->id()->value()];
     expect($updatedStripeSubscription->items->data[0]->price->id)->toBe($basicPriceStripeId);
 });
+
+test('cancel subscription at period end', function () {
+    $price = ProductPriceMother::createMonthly();
+    $product = ProductMother::createPlan()->withPrices($price);
+    $subscription = SubscriptionMother::create()->withPrimaryItem(SubscriptionItemMother::fromProductPrice($price));
+
+    $this->provider->syncProduct($product);
+    $customerSyncResult = $this->provider->syncCustomer($subscription->billable(), BillableDetailsMother::createMinimal());
+
+    // Add a payment method to the customer
+    $this->stripe->customers->update($customerSyncResult->providerCustomerId(), [
+        'source' => 'tok_visa',
+    ]);
+
+    // Create a subscription in Stripe directly
+    $stripeSubscription = $this->stripe->subscriptions->create([
+        'customer' => $customerSyncResult->providerCustomerId(),
+        'items' => [['price' => $this->idStore->getPriceIds([$price->id()->value()])[$price->id()->value()]]],
+    ]);
+
+    // Store mappings
+    $this->idStore->storeSubscriptionId($subscription->id()->value(), $stripeSubscription->id);
+
+    // Cancel at period end
+    $result = $this->provider->cancel($subscription, true, []);
+
+    // Verify
+    expect($result->subscription->cancelAtPeriodEnd())->toBeTrue();
+
+    // Verify on Stripe side
+    $updatedStripeSubscription = $this->stripe->subscriptions->retrieve($stripeSubscription->id);
+    expect($updatedStripeSubscription->cancel_at_period_end)->toBeTrue();
+});
+
+test('undo cancel at period end', function () {
+    $price = ProductPriceMother::createMonthly();
+    $product = ProductMother::createPlan()->withPrices($price);
+    $subscription = SubscriptionMother::create()->withPrimaryItem(SubscriptionItemMother::fromProductPrice($price));
+
+    $this->provider->syncProduct($product);
+    $customerSyncResult = $this->provider->syncCustomer($subscription->billable(), BillableDetailsMother::createMinimal());
+
+    // Add a payment method to the customer
+    $this->stripe->customers->update($customerSyncResult->providerCustomerId(), [
+        'source' => 'tok_visa',
+    ]);
+
+    // Create a subscription in Stripe directly
+    $stripeSubscription = $this->stripe->subscriptions->create([
+        'customer' => $customerSyncResult->providerCustomerId(),
+        'items' => [['price' => $this->idStore->getPriceIds([$price->id()->value()])[$price->id()->value()]]],
+        'cancel_at_period_end' => true,
+    ]);
+
+    // Store mappings
+    $this->idStore->storeSubscriptionId($subscription->id()->value(), $stripeSubscription->id);
+
+    // Initial state: subscription is marked to cancel
+    $subscription = $subscription->cancel(true);
+    expect($subscription->cancelAtPeriodEnd())->toBeTrue();
+
+    // Undo cancel
+    $result = $this->provider->doNotCancel($subscription, []);
+
+    // Verify
+    expect($result->subscription->cancelAtPeriodEnd())->toBeFalse();
+
+    // Verify on Stripe side
+    $updatedStripeSubscription = $this->stripe->subscriptions->retrieve($stripeSubscription->id);
+    expect($updatedStripeSubscription->cancel_at_period_end)->toBeFalse();
+});
+
+test('undo cancel at period end fails if not scheduled for cancellation', function () {
+    $price = ProductPriceMother::createMonthly();
+    $product = ProductMother::createPlan()->withPrices($price);
+    $subscription = SubscriptionMother::create()->withPrimaryItem(SubscriptionItemMother::fromProductPrice($price));
+
+    $this->provider->syncProduct($product);
+    $customerSyncResult = $this->provider->syncCustomer($subscription->billable(), BillableDetailsMother::createMinimal());
+
+    // Add a payment method to the customer
+    $this->stripe->customers->update($customerSyncResult->providerCustomerId(), [
+        'source' => 'tok_visa',
+    ]);
+
+    // Create a subscription in Stripe directly, NOT marked to cancel
+    $stripeSubscription = $this->stripe->subscriptions->create([
+        'customer' => $customerSyncResult->providerCustomerId(),
+        'items' => [['price' => $this->idStore->getPriceIds([$price->id()->value()])[$price->id()->value()]]],
+    ]);
+
+    // Store mappings
+    $this->idStore->storeSubscriptionId($subscription->id()->value(), $stripeSubscription->id);
+
+    // Try to undo cancel (it should fail because it's not marked to cancel)
+    expect(fn() => $this->provider->doNotCancel($subscription, []))
+        ->toThrow(DomainException::class, 'Subscription is not scheduled for cancellation.');
+});

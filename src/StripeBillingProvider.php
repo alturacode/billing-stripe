@@ -8,6 +8,8 @@ use AlturaCode\Billing\Core\Common\BillableDetails;
 use AlturaCode\Billing\Core\Common\BillableIdentity;
 use AlturaCode\Billing\Core\Products\Product;
 use AlturaCode\Billing\Core\Products\ProductPrice;
+use AlturaCode\Billing\Core\Products\ProductPriceId;
+use AlturaCode\Billing\Core\Products\ProductRepository;
 use AlturaCode\Billing\Core\Provider\BillingProvider;
 use AlturaCode\Billing\Core\Provider\BillingProviderResult;
 use AlturaCode\Billing\Core\Provider\CustomerAwareBillingProvider;
@@ -15,7 +17,9 @@ use AlturaCode\Billing\Core\Provider\CustomerSyncResult;
 use AlturaCode\Billing\Core\Provider\PausableBillingProvider;
 use AlturaCode\Billing\Core\Provider\ProductAwareBillingProvider;
 use AlturaCode\Billing\Core\Provider\ProductSyncResult;
+use AlturaCode\Billing\Core\Provider\SwappableItemPriceBillingProvider;
 use AlturaCode\Billing\Core\Subscriptions\Subscription;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionItem;
 use AlturaCode\Billing\Core\Subscriptions\SubscriptionRepository;
 use Exception;
 use Stripe\Exception\ApiErrorException;
@@ -25,13 +29,15 @@ final readonly class StripeBillingProvider implements
     BillingProvider,
     CustomerAwareBillingProvider,
     PausableBillingProvider,
-    ProductAwareBillingProvider
+    ProductAwareBillingProvider,
+    SwappableItemPriceBillingProvider
 {
     public function __construct(
         private StripeClient       $stripeClient,
         private StripeIdStore      $ids,
         private CreateSubscription $createSubscription,
         private SubscriptionRepository $subscriptionRepository,
+        private ProductRepository  $productRepository,
     )
     {
     }
@@ -99,6 +105,54 @@ final readonly class StripeBillingProvider implements
 
         $this->stripeClient->subscriptions->update($stripeSubscriptionId, $update);
         return BillingProviderResult::completed($subscription->resume());
+    }
+
+    /**
+     * @throws ApiErrorException
+     */
+    public function swapItemPrice(
+        Subscription     $subscription,
+        SubscriptionItem $subscriptionItem,
+        string           $newPriceId,
+        array            $options = []
+    ): BillingProviderResult
+    {
+        $stripeSubscriptionItemId = $this->ids->requireSubscriptionItemId($subscriptionItem);
+
+        // Retrieve the product by the new price ID to get the price details
+        $product = $this->productRepository->findByPriceId(ProductPriceId::fromString($newPriceId));
+
+        if (!$product) {
+            throw new Exception("Product not found for price ID: $newPriceId");
+        }
+
+        // Find the specific price from the product
+        $newPrice = null;
+        foreach ($product->prices() as $price) {
+            if ($price->id()->value() === $newPriceId) {
+                $newPrice = $price;
+                break;
+            }
+        }
+
+        if (!$newPrice) {
+            throw new Exception("Price not found in product: $newPriceId");
+        }
+
+        // Get the Stripe price ID for the new price
+        $stripePriceId = $this->ids->getPriceIds([$newPriceId])[$newPriceId] ?? null;
+
+        if (!$stripePriceId) {
+            throw new Exception("Stripe price ID mapping not found for price: $newPriceId");
+        }
+
+        // Update the subscription item with the new price
+        $this->stripeClient->subscriptionItems->update($stripeSubscriptionItemId, [
+            'price' => $stripePriceId,
+            'proration_behavior' => $options['proration_behavior'] ?? 'create_prorations',
+        ]);
+
+        return BillingProviderResult::completed($subscription);
     }
 
     public function syncCustomer(
@@ -204,12 +258,15 @@ final readonly class StripeBillingProvider implements
                         'product' => $stripeProductId,
                         'active' => true,
                     ]);
-                    $this->ids->storePriceId($price->id()->value(), $stripePrice->id);
-                    $result = $result->markSyncedPrice($price->id()->value(), $stripePrice->id);
+                    $stripePriceId = $stripePrice->id;
+                    $this->ids->storePriceId($price->id()->value(), $stripePriceId);
                 } catch (Exception $e) {
                     $result = $result->markFailedPrice($price->id()->value(), $e->getMessage());
+                    continue;
                 }
             }
+
+            $result = $result->markSyncedPrice($price->id()->value(), $stripePriceId);
         }
 
         return $result;

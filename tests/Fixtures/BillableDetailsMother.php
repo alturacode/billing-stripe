@@ -10,6 +10,6 @@ final readonly class BillableDetailsMother
 {
     public static function createMinimal(): BillableDetails
     {
-        return BillableDetails::from(displayName: 'Jane Doe');
+        return BillableDetails::from(displayName: 'Jane Doe', email: 'jane@example.com');
     }
 }

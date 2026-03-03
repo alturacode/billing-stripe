@@ -7,6 +7,7 @@ namespace AlturaCode\Billing\Stripe;
 use AlturaCode\Billing\Core\Common\BillableIdentity;
 use AlturaCode\Billing\Core\Provider\ExternalIdMapper;
 use AlturaCode\Billing\Core\Subscriptions\Subscription;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionItem;
 use InvalidArgumentException;
 
 /**
@@ -54,6 +55,20 @@ final readonly class StripeIdStore
             throw new InvalidArgumentException('Missing Stripe subscription id mapping for subscription.');
         }
         return $subscriptionId;
+    }
+
+    public function getSubscriptionItemId(SubscriptionItem $item): ?string
+    {
+        return $this->idMapper->getExternalId('subscription_item', 'stripe', $item->id()->value());
+    }
+
+    public function requireSubscriptionItemId(SubscriptionItem $item): string
+    {
+        $itemId = $this->getSubscriptionItemId($item);
+        if (!$itemId) {
+            throw new InvalidArgumentException('Missing Stripe subscription item id mapping for subscription item.');
+        }
+        return $itemId;
     }
 
     public function getProductId(string $internalId): ?string

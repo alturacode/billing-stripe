@@ -7,6 +7,7 @@ namespace AlturaCode\Billing\Stripe;
 use AlturaCode\Billing\Core\Common\BillableDetails;
 use AlturaCode\Billing\Core\Common\BillableIdentity;
 use AlturaCode\Billing\Core\Products\Product;
+use AlturaCode\Billing\Core\Products\ProductFeature;
 use AlturaCode\Billing\Core\Products\ProductPrice;
 use AlturaCode\Billing\Core\Products\ProductPriceId;
 use AlturaCode\Billing\Core\Products\ProductRepository;
@@ -20,7 +21,8 @@ use AlturaCode\Billing\Core\Provider\ProductSyncResult;
 use AlturaCode\Billing\Core\Provider\SwappableItemPriceBillingProvider;
 use AlturaCode\Billing\Core\Subscriptions\Subscription;
 use AlturaCode\Billing\Core\Subscriptions\SubscriptionItem;
-use AlturaCode\Billing\Core\Subscriptions\SubscriptionRepository;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionItemEntitlement;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionItemEntitlementId;
 use Exception;
 use Stripe\Exception\ApiErrorException;
 use Stripe\StripeClient;
@@ -36,7 +38,6 @@ final readonly class StripeBillingProvider implements
         private StripeClient       $stripeClient,
         private StripeIdStore      $ids,
         private CreateSubscription $createSubscription,
-        private SubscriptionRepository $subscriptionRepository,
         private ProductRepository  $productRepository,
     )
     {
@@ -46,7 +47,6 @@ final readonly class StripeBillingProvider implements
     {
         if ($subscription->isFree()) {
             $subscription = $subscription->activate();
-            $this->subscriptionRepository->save($subscription);
             return BillingProviderResult::completed($subscription);
         }
 
@@ -152,7 +152,13 @@ final readonly class StripeBillingProvider implements
             'proration_behavior' => $options['proration_behavior'] ?? 'create_prorations',
         ]);
 
-        return BillingProviderResult::completed($subscription);
+        return BillingProviderResult::completed(
+            $subscription->changeItemPrice($subscriptionItem->id(), $newPrice->id(), $newPrice->price(), array_map(fn(ProductFeature $feature) => SubscriptionItemEntitlement::create(
+                id: SubscriptionItemEntitlementId::generate(),
+                key: $feature->key(),
+                value: $feature->value(),
+            ), $product->features()))
+        );
     }
 
     public function syncCustomer(

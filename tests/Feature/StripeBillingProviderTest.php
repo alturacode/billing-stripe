@@ -13,7 +13,6 @@ use AlturaCode\Billing\Stripe\StripeBillingProvider;
 use AlturaCode\Billing\Stripe\StripeIdStore;
 use Stripe\StripeClient;
 use Tests\Fixtures\BillableDetailsMother;
-use Tests\Fixtures\InMemorySubscriptionRepository;
 use Tests\Fixtures\ProductMother;
 use Tests\Fixtures\ProductPriceMother;
 use Tests\Fixtures\SubscriptionItemMother;
@@ -41,7 +40,6 @@ beforeEach(function () {
             stripeClient: $this->stripe,
             idStore: $this->idStore
         ),
-        subscriptionRepository: new InMemorySubscriptionRepository(),
         productRepository: $this->productRepository,
     );
 });
@@ -166,7 +164,8 @@ test('swaps subscription item price from basic to pro (upgrade)', function () {
     );
 
     // Verify the swap was successful
-    expect($result->subscription->id()->value())->toBe($subscription->id()->value());
+    expect($result->subscription->id()->value())->toBe($subscription->id()->value())
+        ->and($result->subscription->primaryItem()->priceId()->value())->toBe($proPrice->id()->value());
 
     // Verify on the Stripe side that the price was actually swapped
     $updatedStripeSubscription = $this->stripe->subscriptions->retrieve($stripeSubscription->id);
@@ -232,7 +231,8 @@ test('swaps subscription item price from pro to basic (downgrade)', function () 
     );
 
     // Verify the swap was successful
-    expect($result->subscription->id()->value())->toBe($subscription->id()->value());
+    expect($result->subscription->id()->value())->toBe($subscription->id()->value())
+        ->and($result->subscription->primaryItem()->priceId()->value())->toBe($basicPrice->id()->value());
 
     // Verify on Stripe side that the price was actually swapped
     $updatedStripeSubscription = $this->stripe->subscriptions->retrieve($stripeSubscription->id);

@@ -4,20 +4,20 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "94d843132039620be2152a977b88228f",
+    "content-hash": "de71c723ea640b7030d6a199c6d8de1d",
     "packages": [
         {
             "name": "alturacode/billing-core",
-            "version": "v0.22.0",
+            "version": "v0.23.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/alturacode/billing-core.git",
-                "reference": "4c978d403e5f772476e64a95d773f42d3ade0878"
+                "reference": "df58e796e9db6a8ac05280fe31684b05eadd2d23"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/alturacode/billing-core/zipball/4c978d403e5f772476e64a95d773f42d3ade0878",
-                "reference": "4c978d403e5f772476e64a95d773f42d3ade0878",
+                "url": "https://api.github.com/repos/alturacode/billing-core/zipball/df58e796e9db6a8ac05280fe31684b05eadd2d23",
+                "reference": "df58e796e9db6a8ac05280fe31684b05eadd2d23",
                 "shasum": ""
             },
             "require": {
@@ -58,9 +58,9 @@
             ],
             "support": {
                 "issues": "https://github.com/alturacode/billing-core/issues",
-                "source": "https://github.com/alturacode/billing-core/tree/v0.22.0"
+                "source": "https://github.com/alturacode/billing-core/tree/v0.23.0"
             },
-            "time": "2026-03-03T17:23:59+00:00"
+            "time": "2026-03-04T23:51:34+00:00"
         },
         {
             "name": "stripe/stripe-php",

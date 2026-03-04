@@ -24,7 +24,7 @@
   "require": {
     "php": "^8.2",
     "stripe/stripe-php": "^19.0",
-    "alturacode/billing-core": "^0.22"
+    "alturacode/billing-core": "^0.23"
   },
   "require-dev": {
     "pestphp/pest": "^4.1",

@@ -58,6 +58,10 @@ final readonly class StripeBillingProvider implements
      */
     public function cancel(Subscription $subscription, bool $atPeriodEnd, array $options): BillingProviderResult
     {
+        if ($subscription->isFree()) {
+            return BillingProviderResult::completed($subscription->cancel($atPeriodEnd));
+        }
+
         $stripeSubscriptionId = $this->ids->requireSubscriptionId($subscription);
 
         if ($atPeriodEnd) {
@@ -74,6 +78,10 @@ final readonly class StripeBillingProvider implements
      */
     public function pause(Subscription $subscription, array $options): BillingProviderResult
     {
+        if ($subscription->isFree()) {
+            return BillingProviderResult::completed($subscription->pause());
+        }
+
         $stripeSubscriptionId = $this->ids->requireSubscriptionId($subscription);
 
         /** @var string $behavior */
@@ -94,6 +102,10 @@ final readonly class StripeBillingProvider implements
      */
     public function resume(Subscription $subscription, array $options): BillingProviderResult
     {
+        if ($subscription->isFree()) {
+            return BillingProviderResult::completed($subscription->resume());
+        }
+
         $stripeSubscriptionId = $this->ids->requireSubscriptionId($subscription);
 
         if (!empty($options['clear_cancel_at_period_end'])) {
@@ -117,8 +129,6 @@ final readonly class StripeBillingProvider implements
         array            $options = []
     ): BillingProviderResult
     {
-        $stripeSubscriptionItemId = $this->ids->requireSubscriptionItemId($subscriptionItem);
-
         // Retrieve the product by the new price ID to get the price details
         $product = $this->productRepository->findByPriceId(ProductPriceId::fromString($newPriceId));
 
@@ -139,6 +149,18 @@ final readonly class StripeBillingProvider implements
             throw new Exception("Price not found in product: $newPriceId");
         }
 
+        $newSubscription = $subscription->changeItemPrice($subscriptionItem->id(), $newPrice->id(), $newPrice->price(), array_map(fn(ProductFeature $feature) => SubscriptionItemEntitlement::create(
+            id: SubscriptionItemEntitlementId::generate(),
+            key: $feature->key(),
+            value: $feature->value(),
+        ), $product->features()));
+
+        if ($subscription->isFree()) {
+            return BillingProviderResult::completed($newSubscription);
+        }
+
+        $stripeSubscriptionItemId = $this->ids->requireSubscriptionItemId($subscriptionItem);
+
         // Get the Stripe price ID for the new price
         $stripePriceId = $this->ids->getPriceIds([$newPriceId])[$newPriceId] ?? null;
 
@@ -152,13 +174,7 @@ final readonly class StripeBillingProvider implements
             'proration_behavior' => $options['proration_behavior'] ?? 'create_prorations',
         ]);
 
-        return BillingProviderResult::completed(
-            $subscription->changeItemPrice($subscriptionItem->id(), $newPrice->id(), $newPrice->price(), array_map(fn(ProductFeature $feature) => SubscriptionItemEntitlement::create(
-                id: SubscriptionItemEntitlementId::generate(),
-                key: $feature->key(),
-                value: $feature->value(),
-            ), $product->features()))
-        );
+        return BillingProviderResult::completed($newSubscription);
     }
 
     public function syncCustomer(
@@ -283,6 +299,10 @@ final readonly class StripeBillingProvider implements
      */
     public function doNotCancel(Subscription $subscription, array $options): BillingProviderResult
     {
+        if ($subscription->isFree()) {
+            return BillingProviderResult::completed($subscription->doNotCancel());
+        }
+
         $stripeSubscriptionId = $this->ids->requireSubscriptionId($subscription);
 
         $this->stripeClient->subscriptions->update($stripeSubscriptionId, [

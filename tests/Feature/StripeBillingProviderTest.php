@@ -112,6 +112,45 @@ test('creates a paid subscription', function () {
         ->and($result->clientAction->url)->not()->toBeNull();
 });
 
+test('swaps subscription item price from free to paid without payment method initiates checkout', function () {
+    $freePrice = ProductPrice::create(
+        id: ProductPriceId::generate(),
+        price: Money::usd(0),
+        interval: ProductPriceInterval::monthly(),
+    );
+    $paidPrice = ProductPrice::create(
+        id: ProductPriceId::generate(),
+        price: Money::usd(1200),
+        interval: ProductPriceInterval::monthly(),
+    );
+    $product = ProductMother::createPlan()->withPrices($freePrice, $paidPrice);
+
+    $this->productRepository->save($product);
+    $this->provider->syncProduct($product);
+
+    $subscription = SubscriptionMother::create()->withPrimaryItem(
+        SubscriptionItemMother::fromProductPrice($freePrice)
+    );
+    $subscription = $subscription->activate();
+
+    $this->provider->syncCustomer($subscription->billable(), BillableDetailsMother::createMinimal());
+
+    $result = $this->provider->swapItemPrice(
+        $subscription,
+        $subscription->primaryItem(),
+        $paidPrice->id()->value(),
+        [
+            'success_url' => 'https://example.com/success',
+            'cancel_url' => 'https://example.com/cancel',
+        ]
+    );
+
+    expect($result->subscription->id()->value())->toBe($subscription->id()->value())
+        ->and($result->subscription->primaryItem()->priceId()->value())->toBe($paidPrice->id()->value())
+        ->and($result->requiresAction())->toBeTrue()
+        ->and($result->clientAction->url)->not()->toBeNull();
+});
+
 test('swaps subscription item price from basic to pro (upgrade)', function () {
     // Create a product with two price tiers: basic and pro
     $basicPrice = ProductPrice::create(

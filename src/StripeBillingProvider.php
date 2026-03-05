@@ -155,11 +155,21 @@ final readonly class StripeBillingProvider implements
             value: $feature->value(),
         ), $product->features()));
 
-        if ($subscription->isFree()) {
+        $stripeSubscriptionItemId = $this->ids->getSubscriptionItemId($subscriptionItem);
+
+        if (!$newSubscription->isFree()) {
+            $stripeCustomerId = $this->ids->requireCustomerId($subscription->billable());
+
+            if (!$this->customerHasPaymentMethod($stripeCustomerId) || !$stripeSubscriptionItemId) {
+                return $this->createSubscription->create($newSubscription, $options);
+            }
+        } elseif (!$stripeSubscriptionItemId) {
             return BillingProviderResult::completed($newSubscription);
         }
 
-        $stripeSubscriptionItemId = $this->ids->requireSubscriptionItemId($subscriptionItem);
+        if (!$stripeSubscriptionItemId) {
+            throw new Exception('Missing Stripe subscription item id mapping for subscription item.');
+        }
 
         // Get the Stripe price ID for the new price
         $stripePriceId = $this->ids->getPriceIds([$newPriceId])[$newPriceId] ?? null;
@@ -229,6 +239,31 @@ final readonly class StripeBillingProvider implements
         }
 
         return $result;
+    }
+
+    /**
+     * @throws ApiErrorException
+     */
+    private function customerHasPaymentMethod(string $stripeCustomerId): bool
+    {
+        $customer = $this->stripeClient->customers->retrieve($stripeCustomerId);
+
+        $invoiceSettings = $customer->invoice_settings ?? null;
+        $defaultPaymentMethod = is_object($invoiceSettings)
+            ? ($invoiceSettings->default_payment_method ?? null)
+            : null;
+
+        if (!empty($defaultPaymentMethod) || !empty($customer->default_source)) {
+            return true;
+        }
+
+        $paymentMethods = $this->stripeClient->paymentMethods->all([
+            'customer' => $stripeCustomerId,
+            'type' => 'card',
+            'limit' => 1,
+        ]);
+
+        return !empty($paymentMethods->data);
     }
 
     private function syncProductWithStripe(ProductSyncResult $result, Product $product, ?string $stripeProductId): ProductSyncResult

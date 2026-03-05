@@ -146,7 +146,7 @@ test('swaps subscription item price from free to paid without payment method ini
     );
 
     expect($result->subscription->id()->value())->toBe($subscription->id()->value())
-        ->and($result->subscription->primaryItem()->priceId()->value())->toBe($paidPrice->id()->value())
+        ->and($result->subscription->primaryItem()->priceId()->value())->toBe($freePrice->id()->value())
         ->and($result->requiresAction())->toBeTrue()
         ->and($result->clientAction->url)->not()->toBeNull();
 });

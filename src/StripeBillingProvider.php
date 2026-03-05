@@ -161,7 +161,8 @@ final readonly class StripeBillingProvider implements
             $stripeCustomerId = $this->ids->requireCustomerId($subscription->billable());
 
             if (!$this->customerHasPaymentMethod($stripeCustomerId) || !$stripeSubscriptionItemId) {
-                return $this->createSubscription->create($newSubscription, $options);
+                $checkoutResult = $this->createSubscription->create($newSubscription, $options);
+                return BillingProviderResult::redirect($subscription, $checkoutResult->clientAction->url);
             }
         } elseif (!$stripeSubscriptionItemId) {
             return BillingProviderResult::completed($newSubscription);

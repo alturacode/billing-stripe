@@ -155,17 +155,20 @@ final readonly class StripeBillingProvider implements
             value: $feature->value(),
         ), $product->features()));
 
+        $stripeSubscriptionId = $this->ids->getSubscriptionId($subscription);
         $stripeSubscriptionItemId = $this->ids->getSubscriptionItemId($subscriptionItem);
 
-        if (!$newSubscription->isFree()) {
+        if (!$stripeSubscriptionId) {
+            if ($newSubscription->isFree()) {
+                return BillingProviderResult::completed($newSubscription);
+            }
+
             $stripeCustomerId = $this->ids->requireCustomerId($subscription->billable());
 
             if (!$this->customerHasPaymentMethod($stripeCustomerId) || !$stripeSubscriptionItemId) {
                 $checkoutResult = $this->createSubscription->create($newSubscription, $options);
                 return BillingProviderResult::redirect($subscription, $checkoutResult->clientAction->url);
             }
-        } elseif (!$stripeSubscriptionItemId) {
-            return BillingProviderResult::completed($newSubscription);
         }
 
         if (!$stripeSubscriptionItemId) {

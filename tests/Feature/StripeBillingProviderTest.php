@@ -279,6 +279,55 @@ test('swaps subscription item price from pro to basic (downgrade)', function () 
     expect($updatedStripeSubscription->items->data[0]->price->id)->toBe($basicPriceStripeId);
 });
 
+test('swaps subscription item price from paid to free when stripe mapping exists', function () {
+    $paidPrice = ProductPrice::create(
+        id: ProductPriceId::generate(),
+        price: Money::usd(1500),
+        interval: ProductPriceInterval::monthly(),
+    );
+    $freePrice = ProductPrice::create(
+        id: ProductPriceId::generate(),
+        price: Money::usd(0),
+        interval: ProductPriceInterval::monthly(),
+    );
+    $product = ProductMother::createPlan()->withPrices($paidPrice, $freePrice);
+
+    $this->productRepository->save($product);
+    $productSyncResult = $this->provider->syncProduct($product);
+
+    $subscription = SubscriptionMother::create()->withPrimaryItem(
+        SubscriptionItemMother::fromProductPrice($paidPrice)
+    );
+
+    $customerSyncResult = $this->provider->syncCustomer($subscription->billable(), BillableDetailsMother::createMinimal());
+
+    $this->stripe->customers->update($customerSyncResult->providerCustomerId(), [
+        'source' => 'tok_visa',
+    ]);
+
+    $stripeSubscription = $this->stripe->subscriptions->create([
+        'customer' => $customerSyncResult->providerCustomerId(),
+        'items' => [['price' => $productSyncResult->syncedPriceIds()[$paidPrice->id()->value()]]],
+    ]);
+
+    $this->idStore->storeSubscriptionId($subscription->id()->value(), $stripeSubscription->id);
+    $this->idStore->storeMultipleSubscriptionItemIdMappings([
+        $subscription->primaryItem()->id()->value() => $stripeSubscription->items->data[0]->id,
+    ]);
+
+    $result = $this->provider->swapItemPrice(
+        $subscription,
+        $subscription->primaryItem(),
+        $freePrice->id()->value()
+    );
+
+    expect($result->subscription->primaryItem()->priceId()->value())->toBe($freePrice->id()->value());
+
+    $updatedStripeSubscription = $this->stripe->subscriptions->retrieve($stripeSubscription->id);
+    $freePriceStripeId = $productSyncResult->syncedPriceIds()[$freePrice->id()->value()];
+    expect($updatedStripeSubscription->items->data[0]->price->id)->toBe($freePriceStripeId);
+});
+
 test('cancel subscription at period end', function () {
     $price = ProductPriceMother::createMonthly();
     $product = ProductMother::createPlan()->withPrices($price);

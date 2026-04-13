@@ -6,6 +6,8 @@ namespace AlturaCode\Billing\Stripe;
 
 use AlturaCode\Billing\Core\Provider\BillingProviderResult;
 use AlturaCode\Billing\Core\Subscriptions\Subscription;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionTrialMissingPaymentMethodBehavior;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionTrialPaymentMethodCollection;
 use InvalidArgumentException;
 use LogicException;
 use Stripe\StripeClient;
@@ -73,6 +75,25 @@ final readonly class CreateSubscriptionUsingCheckout implements CreateSubscripti
 
         if ($subscription->trialEndsAt() !== null) {
             $subscriptionData['trial_end'] = $subscription->trialEndsAt()->getTimestamp();
+        }
+
+        if ($subscription->trialPolicy()) {
+            $policy = $subscription->trialPolicy();
+
+            if ($policy->paymentMethodCollection()) {
+                $params['payment_method_collection'] = match ($policy->paymentMethodCollection()) {
+                    SubscriptionTrialPaymentMethodCollection::Required => 'always',
+                    SubscriptionTrialPaymentMethodCollection::Optional => 'if_required',
+                };
+            }
+
+            if ($policy->missingPaymentMethodBehavior()) {
+                $subscriptionData['trial_settings']['end_behavior']['missing_payment_method'] = match ($policy->missingPaymentMethodBehavior()) {
+                    SubscriptionTrialMissingPaymentMethodBehavior::Cancel => 'cancel',
+                    SubscriptionTrialMissingPaymentMethodBehavior::Pause => 'pause',
+                    SubscriptionTrialMissingPaymentMethodBehavior::CreateInvoice => 'create_invoice',
+                };
+            }
         }
 
         if (!empty($subscriptionData)) {

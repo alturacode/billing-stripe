@@ -10,6 +10,9 @@ use AlturaCode\Billing\Core\Subscriptions\Subscription;
 use AlturaCode\Billing\Core\Subscriptions\SubscriptionId;
 use AlturaCode\Billing\Core\Subscriptions\SubscriptionName;
 use AlturaCode\Billing\Core\Subscriptions\SubscriptionProvider;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionTrialMissingPaymentMethodBehavior;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionTrialPaymentMethodCollection;
+use AlturaCode\Billing\Core\Subscriptions\SubscriptionTrialPolicy;
 use AlturaCode\Billing\Stripe\CreateSubscriptionUsingCheckout;
 use AlturaCode\Billing\Stripe\MissingStripeIdMapping;
 use AlturaCode\Billing\Stripe\StripeIdStore;
@@ -196,6 +199,44 @@ it('handles trial and cancel_at_period_end', function () {
                 $params['subscription_data']['trial_end'] === $trialEnd->getTimestamp();
         }))
         ->willReturn($mockSession);
+
+    $this->action->create($subscription, [
+        'success_url' => 'https://example.com/success',
+        'cancel_url' => 'https://example.com/cancel'
+    ]);
+});
+
+it('integrates trial policy in checkout session', function () {
+    $item = SubscriptionItemMother::createMonthly();
+    $trialEndsAt = new DateTimeImmutable('+14 days');
+
+    $policy = SubscriptionTrialPolicy::create(
+        paymentMethodCollection: SubscriptionTrialPaymentMethodCollection::Required,
+        missingPaymentMethodBehavior: SubscriptionTrialMissingPaymentMethodBehavior::Pause
+    );
+
+    $subscription = Subscription::create(
+        id: SubscriptionId::generate(),
+        name: SubscriptionName::fromString('pro'),
+        billable: BillableIdentity::fromString('user', 1),
+        provider: SubscriptionProvider::fromString('stripe'),
+        trialEndsAt: $trialEndsAt,
+        trialPolicy: $policy
+    )
+        ->withItems($item)
+        ->withPrimaryItem($item);
+
+    $this->idStore->storeCustomerId($subscription->billable(), 'cus_123');
+    $this->idStore->storePriceId($item->priceId()->value(), 'price_stripe_123');
+
+    $this->sessionService->expects($this->once())
+        ->method('create')
+        ->with($this->callback(function ($params) use ($trialEndsAt) {
+            return ($params['payment_method_collection'] ?? null) === 'always' &&
+                ($params['subscription_data']['trial_end'] ?? null) === $trialEndsAt->getTimestamp() &&
+                ($params['subscription_data']['trial_settings']['end_behavior']['missing_payment_method'] ?? null) === 'pause';
+        }))
+        ->willReturn((object)['url' => 'https://checkout.stripe.com/session_123']);
 
     $this->action->create($subscription, [
         'success_url' => 'https://example.com/success',
